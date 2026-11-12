@@ -654,12 +654,7 @@ function saveLog() {
 
 // Sem Web Worker ou WebAssembly não há como rodar o Python: avisa logo, em vez de falhar no meio.
 if (typeof Worker === 'undefined' || typeof WebAssembly === 'undefined') {
-  $('pill').classList.remove('on');
-  $('pillText').textContent = 'Navegador sem suporte';
-  $('led').classList.remove('on');
   note('Este navegador não roda o Python (precisa de Web Worker e WebAssembly). Use o Chrome, o Edge ou o Firefox atualizados.', true);
-} else {
-  $('led').classList.add('on');
 }
 draw();
 

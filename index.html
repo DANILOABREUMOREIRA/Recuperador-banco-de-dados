@@ -26,7 +26,6 @@
       <button class="logo" id="toggle" onclick="toggleSide()" title="Mostrar ou esconder o painel de tabelas"
               aria-label="Abrir ou fechar o painel de tabelas" aria-controls="sidebar" aria-expanded="false">
         <img src="static/logo_trilho.svg" alt="" width="42" height="34">
-        <span class="dot-led" id="led" aria-hidden="true"></span>
       </button>
       <div class="rail-nav">
         <button class="rail-btn active" id="goRecover" data-view="recover" onclick="showView('recover')" title="Recuperar" aria-label="Recuperar">
@@ -78,8 +77,6 @@
           <span>Não lidas</span><em id="cnt-SKIPPED">0</em>
         </button>
       </div>
-      <!-- Selo no pé do painel: tudo roda no navegador, sem servidor. -->
-      <div class="pill on" id="pill"><i></i><span id="pillText">Roda no seu navegador</span></div>
     </aside>
 
     <main class="stage" id="stage">
