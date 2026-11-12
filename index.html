@@ -90,11 +90,11 @@
           <div class="recover-top" id="recoverTop"><div class="recover-top-in">
             <p class="lead">Solte o banco corrompido, recupere e baixe o dump <code>.sql</code>. Tudo roda no seu computador: nada é enviado.</p>
             <!-- A ÁREA DE SOLTAR é clicável (abre o seletor de arquivos) e também funciona pelo teclado (Enter ou
-                   espaço). Aceita um .rar, um .zip ou a pasta data (arrastada ou escolhida pelo link logo abaixo). -->
+                   espaço). Aceita um .zip ou a pasta data (arrastada ou escolhida pelo link logo abaixo). -->
             <div class="drop" id="drop" role="button" tabindex="0" aria-describedby="dropSub"
                  onclick="document.getElementById('fileInput').click()"
                  onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); document.getElementById('fileInput').click(); }">
-              <input type="file" id="fileInput" accept=".rar,.zip" hidden onchange="pickFile(this.files)">
+              <input type="file" id="fileInput" accept=".zip" hidden onchange="pickFile(this.files)">
               <input type="file" id="folderInput" webkitdirectory hidden onchange="pickFolderInput(this.files)">
               <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
                 <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
@@ -102,7 +102,7 @@
                 <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
               </svg>
               <h2 id="dropTitle">Solte aqui o banco</h2>
-              <p id="dropSub">arquivo .rar ou .zip, ou a pasta data</p>
+              <p id="dropSub">arquivo .zip ou a pasta data</p>
             </div>
             <button class="link-btn folder-link" id="folderLink" onclick="document.getElementById('folderInput').click()">ou escolher a pasta data</button>
             <!-- Onde o .sql vai ficar: o app.js escreve conforme o navegador (Chrome e Edge gravam direto no disco). -->
@@ -196,9 +196,9 @@
           <header class="stage-head"><h1>Como funciona?</h1><p>Recuperação direta no navegador, passo a passo.</p></header>
           <section class="card">
             <ol class="how">
-              <li><b>Escolha o banco.</b> Pode ser um <code>.zip</code>, um <code>.rar</code> ou a pasta <code>data</code> do MySQL (a que tem o arquivo <code>ibdata1</code>). Clique na área ou arraste. O <code>.zip</code> é descompactado aos poucos no disco do navegador e apagado no fim, então aguenta bancos grandes. O <code>.rar</code> é lido inteiro na memória: serve até uns 2 GB, e acima disso extraia antes e escolha a pasta.</li>
+              <li><b>Escolha o banco.</b> Pode ser um <code>.zip</code> ou a pasta <code>data</code> do MySQL (a que tem o arquivo <code>ibdata1</code>). Clique na área ou arraste. O <code>.zip</code> é descompactado aos poucos no disco do navegador e apagado no fim, então não depende da memória. Banco em <code>.rar</code>: extraia antes e escolha a pasta.</li>
               <li><b>Dê um nome.</b> Ele vira o nome do arquivo <code>.sql</code> e identifica a recuperação no histórico.</li>
-              <li><b>Recupere.</b> No Chrome e no Edge você escolhe onde salvar o <code>.sql</code> e ele é gravado direto no disco, tabela por tabela. No Firefox e no Safari o dump fica na memória e é baixado no fim (só serve para bancos pequenos).</li>
+              <li><b>Recupere.</b> No Chrome e no Edge você escolhe onde salvar o <code>.sql</code> e ele é gravado direto no disco, tabela por tabela. Nos outros navegadores o dump é guardado no disco do navegador e baixado no fim, o que pede espaço livre extra.</li>
               <li><b>Sem servidor MySQL.</b> O Python roda dentro do navegador (Pyodide), lê as páginas do <code>ibdata1</code> e refaz a estrutura pelo dicionário do InnoDB e pelos <code>.frm</code>. Os arquivos não saem do seu computador; só o Pyodide é baixado da internet.</li>
               <li><b>Confira.</b> O relatório mostra cada tabela, os registros lidos, os avisos de registros ilegíveis ou páginas perdidas e o SHA-256 do dump.</li>
               <li><b>Importe.</b> Num MySQL, rode <code>mysql -uroot -p &lt; banco.sql</code>.</li>

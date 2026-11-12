@@ -1,6 +1,6 @@
 # Recuperador MySQL InnoDB - versão navegador
 
-Recupera tabelas **InnoDB** de um banco MySQL 5.x (pasta `data`, `.zip` ou `.rar`) direto no navegador, sem instalar
+Recupera tabelas **InnoDB** de um banco MySQL 5.x (pasta `data` ou `.zip`) direto no navegador, sem instalar
 nada e sem servidor. Os arquivos são lidos no computador do usuário: nada é enviado para a internet.
 
 É o "modo de leitura direta" do programa de desktop (método TwinDB undrop-for-innodb), rodando em Python dentro do
@@ -9,10 +9,10 @@ navegador pelo [Pyodide](https://pyodide.org).
 ## Como usar
 
 1. Abra o site.
-2. Solte na tela, ou clique para escolher, um **`.zip`**, um **`.rar`** ou a pasta **`data`** do MySQL (a que tem o
-   `ibdata1`). A pasta também pode ser escolhida pelo link *ou escolher a pasta data*.
+2. Solte na tela, ou clique para escolher, um **`.zip`** ou a pasta **`data`** do MySQL (a que tem o `ibdata1`). A
+   pasta também pode ser escolhida pelo link *ou escolher a pasta data*. Banco em `.rar`: extraia antes.
 3. Dê um nome e clique em **Recuperar**. No Chrome e no Edge você escolhe onde salvar o `.sql` e ele é gravado direto no
-   disco. No Firefox e no Safari o dump fica na memória e é baixado no fim (só para bancos pequenos).
+   disco. Nos outros navegadores o dump é guardado no disco do navegador e baixado no fim (pede espaço livre extra).
 4. Importe o `.sql` num MySQL: `mysql -uroot -p < banco_recuperado.sql`
 
 ## Interface
@@ -23,16 +23,35 @@ e sol, no pé da barra, alterna entre o modo claro e o escuro. Ficou de fora o q
 MySQL: Query Browser, *Abrir pasta*, *Salvar em* e a pasta `data` nova na saída. As recuperações anteriores ficam
 gravadas no próprio navegador.
 
-## Entrada: pasta, .zip e .rar
+## Meta: bancos de até 20 GB
 
-| Entrada | Como é lida | Limite |
+Regra do projeto: só entra o que escala até 20 GB. O que depende de ler tudo na memória do navegador (2 a 4 GB) não
+entra.
+
+| Entrada | Como é lida | Escala? |
 |---|---|---|
-| Pasta `data` | Os arquivos são lidos direto do disco, aos pedaços, sem copiar | Só o tamanho que o Python aguenta por tabela |
-| `.zip` | [zip.js](https://gildas-lormeau.github.io/zip.js/) lê o arquivo aos pedaços e grava no disco privado do navegador (OPFS) só o que a leitura precisa; tudo é apagado no fim | O espaço livre que o navegador oferece (aparece um aviso se faltar) |
-| `.rar` (v4 e v5) | [libarchive.js](https://github.com/nika-begiashvili/libarchivejs) (WebAssembly) lê o arquivo inteiro na memória e extrai numa passada | Até uns 2 GB: o arquivo e o conteúdo precisam caber na memória do WebAssembly. Acima disso, extraia antes e escolha a pasta |
+| Pasta `data` | Os arquivos são lidos direto do disco, aos pedaços, sem copiar | Sim |
+| `.zip` | [zip.js](https://gildas-lormeau.github.io/zip.js/) lê o arquivo aos pedaços e grava no disco privado do navegador (OPFS) só o que a leitura precisa; tudo é apagado no fim | Sim, se houver espaço livre (a conferência avisa antes) |
+| `.rar` | O formato obriga a ler o arquivo inteiro na memória | **Não: removido.** Extraia antes e escolha a pasta |
 
-Do `.zip` e do `.rar` só entram o `ibdata1`, os `.frm`, `.ibd` e `.TRG`. Os `.MYD`/`.MYI` fora de `mysql/` viram
-arquivos vazios (só o nome importa). Arquivo com senha é recusado com uma mensagem.
+| Saída | Como é gravada | Escala? |
+|---|---|---|
+| `.sql` no Chrome e no Edge | Direto no arquivo escolhido, tabela por tabela | Sim |
+| `.sql` nos outros navegadores | Guardado no disco do navegador (OPFS) e baixado no fim; pede o espaço do dump a mais | Sim, com espaço livre |
+| Dump na memória | — | **Não: removido** |
+
+Do `.zip` só entram o `ibdata1`, os `.frm`, `.ibd` e `.TRG`. Os `.MYD`/`.MYI` fora de `mysql/` viram arquivos vazios
+(só o nome importa). Arquivo com senha é recusado com uma mensagem.
+
+### O que ainda impede 20 GB
+
+- **Memória por tabela.** O motor lê todas as linhas de uma tabela antes de gerar o SQL. Medido: o pico é de **5 a 9
+  vezes** o tamanho da tabela em páginas (`nfcexml`: 38 MB de páginas, pico de 196 MB; `produto`: 12,6 MB, pico de
+  118 MB). Com cerca de 2 GB úteis no Python do navegador, uma tabela com mais de uns 300 MB de páginas não cabe. Num
+  banco de 20 GB isso é provável. A saída é ler a tabela em lotes, sem juntar tudo; ainda não foi feita.
+- **Espaço em disco.** O `.zip` precisa do banco descompactado no disco do navegador, mais o dump (cerca de 0,55 vez o
+  tamanho) fora do Chrome e do Edge.
+- **Tempo.** Cerca de 2 vezes o do desktop; por extrapolação, perto de 1h40 para 20 GB. Não medido.
 
 ## O que faz
 
@@ -59,9 +78,8 @@ Limitação do método: registros apagados há pouco tempo podem reaparecer (pá
 
 ## Limites conhecidos
 
-- Cada tabela é montada inteira na memória antes de ir para o disco. O navegador dá de 2 a 4 GB ao Python: uma
-  tabela sozinha com vários GB não cabe.
-- Testado com `ibdata1` de 210 MB (pasta, `.zip` e `.rar` reais) e de 578 MB (pasta). Acima disso ainda não foi testado.
+- Veja *O que ainda impede 20 GB*, acima: a memória por tabela é o limite de hoje.
+- Testado com `ibdata1` de 210 MB (pasta e `.zip`) e de 578 MB (pasta). Acima disso ainda não foi testado.
 - Cerca de 2 vezes mais lento que o Python do desktop.
 - O Pyodide vem de `cdn.jsdelivr.net`: precisa de internet para abrir o site.
 
@@ -77,13 +95,12 @@ index.html            tela: a mesma interface do programa de desktop (3 colunas,
 static/app.css        visual, com modo claro e modo escuro (variáveis de cor em :root e :root[data-theme="dark"])
 static/app.js         lógica da tela: banco, nome, andamento, tabelas, histórico (neste navegador), relatório
 static/select.js      escolhe quais arquivos entram (acha o ibdata1, filtra logs e caminhos suspeitos)
-static/extract.js     descompacta .zip e .rar e limpa o disco do navegador depois
+static/extract.js     descompacta o .zip e limpa o disco do navegador depois
 static/theme-init.js  escolhe o tema antes de a página aparecer (o gravado, ou o do sistema)
 static/*.png, *.svg   ícone dos óculos (aba do navegador) e logo da barra; favicon.ico na raiz
 zip-worker.js         lê o .zip aos pedaços e grava no OPFS
 worker.js             liga o Pyodide, monta os arquivos (WORKERFS) e grava o dump
 vendor/zip            zip.js 2.24.0 (BSD-3-Clause)
-vendor/libarchive     libarchive.js 2.0.2 (MIT), com um ajuste local: veja PATCHES.md
 py/web_driver.py      orquestra a leitura direta e monta o dump em pedaços
 py/innodb_carver.py   leitura das páginas do InnoDB          (cópia do desktop)
 py/page_health.py     checksum, página rasgada, doublewrite  (cópia do desktop)
@@ -107,10 +124,10 @@ python py/web_driver.py <pasta data> saida.sql relatorio.json
 Teste automático no navegador (compara o SHA-256 do arquivo com o que o Python calculou):
 
 ```
-python dev/dev_server.py <pasta data> [arquivo .zip ou .rar]
+python dev/dev_server.py <pasta data> [arquivo .zip]
 ```
 
-Abra `http://127.0.0.1:8765/?auto=1` para a pasta ou `?auto=archive` para o arquivo (use `-` no lugar da pasta se só
+Abra `http://127.0.0.1:8765/?auto=1` para a pasta ou `?auto=archive` para o .zip (use `-` no lugar da pasta se só
 quiser o arquivo). O resultado fica em `dev/resultado_navegador.json`; o campo `sha256` tem de ser igual ao do relatório
 gerado pelo Python comum.
 

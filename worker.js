@@ -5,10 +5,12 @@ importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
 
 const MODULES = ["innodb_carver", "page_health", "mysql_codec", "frm_parser", "dictionary_rebuild", "web_driver"];
 
-// Recebe { files: [{name: "ibdata1" | "banco/tabela.frm", data: File}], handle: FileSystemFileHandle | null } e avisa a
-// tela do que acontece: {phase}, {log}, {planned}, {tableStart}, {pages}, {table}, {done} ou {error}.
+// Recebe { files: [{name: "ibdata1" | "banco/tabela.frm", data: File}], handle: FileSystemFileHandle | null,
+//   dumpDir } e avisa a tela do que acontece: {phase}, {log}, {planned}, {tableStart}, {pages}, {table}, {done} ou {error}.
+// O dump vai para o arquivo que o usuário escolheu (handle: Chrome e Edge) ou, sem ele, para um arquivo do disco do
+//   navegador (OPFS, na pasta dumpDir) que a tela baixa no fim. Nunca fica na memória: um dump de banco grande tem GBs.
 onmessage = async ({ data }) => {
-  let writable = null;
+  let writable = null, staged = null;
   try {
     postMessage({ phase: "prep" });
     const pyodide = await loadPyodide();
@@ -24,34 +26,48 @@ onmessage = async ({ data }) => {
     const recovery = pyodide.globals.get("recovery");
     recovery.on_pages = (done, total) => postMessage({ pages: { done, total } });
 
-    // Com o arquivo de destino escolhido (Chrome/Edge) cada pedaço vai direto para o disco. Sem ele (Firefox/Safari)
-    // os pedaços ficam guardados pelo navegador e viram um download no fim.
-    const parts = [];
-    if (data.handle) writable = await data.handle.createWritable();
-    const write = async (proxy) => {
+    let write;
+    if (data.handle) {
+      writable = await data.handle.createWritable();
+      write = (bytes) => writable.write(bytes);
+    } else {
+      if (!navigator.storage || !navigator.storage.getDirectory) {
+        throw new Error("Este navegador não deixa escolher onde salvar nem tem disco privado (OPFS) para guardar o dump. Use o Chrome ou o Edge.");
+      }
+      const folder = await (await navigator.storage.getDirectory()).getDirectoryHandle(data.dumpDir, { create: true });
+      const handle = await folder.getFileHandle("dump.sql", { create: true });
+      const access = await handle.createSyncAccessHandle();
+      let position = 0;
+      staged = { handle, access };
+      write = (bytes) => { access.write(bytes, { at: position }); position += bytes.byteLength; };
+    }
+    const put = async (proxy) => {
       const bytes = proxy.toJs();
       proxy.destroy();
-      if (!bytes.length) return;
-      if (writable) await writable.write(bytes);
-      else parts.push(new Blob([bytes]));
+      if (bytes.length) await write(bytes);
     };
 
     postMessage({ phase: "dict" });
-    await write(recovery.plan());
+    await put(recovery.plan());
     const names = JSON.parse(pyodide.runPython("json.dumps([name for name, _ in recovery.tables])"));
     postMessage({ planned: names });
     for (let index = 0; index < names.length; index++) {
       postMessage({ tableStart: { index, total: names.length, name: names[index] } });
-      await write(recovery.table(index));
+      await put(recovery.table(index));
       postMessage({ table: JSON.parse(recovery.info(index)) });
     }
     postMessage({ phase: "objects" });
-    await write(recovery.finish());
+    await put(recovery.finish());
     postMessage({ phase: "close" });
+    let blob = null;
     if (writable) await writable.close();
-    postMessage({ done: JSON.parse(recovery.report()), blob: writable ? null : new Blob(parts, { type: "application/sql" }) });
+    else { staged.access.flush(); staged.access.close(); blob = await staged.handle.getFile(); }
+    postMessage({ done: JSON.parse(recovery.report()), blob });
   } catch (error) {
     if (writable) await writable.abort().catch(() => {});
-    postMessage({ error: String((error && error.message) || error) });
+    if (staged) { try { staged.access.close(); } catch (e) { /* já fechado */ } }
+    const quota = error && error.name === "QuotaExceededError";
+    postMessage({ error: quota ? "O disco do navegador encheu ao guardar o dump. Libere espaço no disco ou use o Chrome ou o Edge, que gravam direto no arquivo escolhido."
+      : String((error && error.message) || error) });
   }
 };

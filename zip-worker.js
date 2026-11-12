@@ -1,14 +1,15 @@
 // zip-worker.js - abre um .zip e grava no disco do navegador (OPFS) só o que a leitura direta precisa: o ibdata1 e os
 // .frm, .ibd e .TRG. O .zip é lido aos pedaços (BlobReader) e cada arquivo vai para o disco em fluxo, então o tamanho
-// do banco não é limitado pela memória. Sem OPFS (navegador antigo) cai para a memória, que serve só para bancos pequenos.
-// Recebe { file, dir }; avisa {log}, {progress}, {done: {files, mode}} ou {error}.
+// do banco não é limitado pela memória. Sem OPFS não há como: a descompactação na memória não aguenta bancos grandes.
+// Recebe { file, dir, reserveRatio }; avisa {log}, {progress}, {done: {files}} ou {error}.
 import * as zip from './vendor/zip/zip.min.js';
 import { selectData } from './static/select.js';
 
 zip.configure({ useWebWorkers: false });   // este já é um worker
 
 const say = log => postMessage({ log });
-const mb = bytes => (bytes / 1048576).toFixed(1).replace('.', ',') + ' MB';
+const size = bytes => bytes >= 1073741824 ? (bytes / 1073741824).toFixed(2).replace('.', ',') + ' GB'
+  : (bytes / 1048576).toFixed(1).replace('.', ',') + ' MB';
 
 // Um destino para os bytes de um arquivo: um WritableStream que grava no OPFS (createSyncAccessHandle, que existe em
 //   todos os navegadores com OPFS) e devolve o File ao fechar.
@@ -29,7 +30,10 @@ async function opfsSink(root, relPath) {
 
 onmessage = async ({ data }) => {
   try {
-    const { file, dir } = data;
+    const { file, dir, reserveRatio } = data;
+    if (!navigator.storage || !navigator.storage.getDirectory) {
+      throw new Error('Este navegador não tem disco privado (OPFS) para descompactar o .zip. Extraia o .zip e escolha a pasta data.');
+    }
     const reader = new zip.ZipReader(new zip.BlobReader(file));
     let all;
     try { all = await reader.getEntries(); }
@@ -40,21 +44,16 @@ onmessage = async ({ data }) => {
     const chosen = selectData(found, { emptyMyisam: true });
     if (!chosen) throw new Error('O .zip não tem o arquivo ibdata1: não parece uma pasta data do MySQL.');
     if (chosen.copies > 1) say('Havia mais de um ibdata1 no .zip: usei o maior.');
-    say(`.zip: ${found.length} arquivos; vão ser gravados ${chosen.items.length} (${mb(chosen.size)}), ibdata1 de ${mb(chosen.ibdata.size)}.`);
+    say(`.zip: ${found.length} arquivos; vão ser gravados ${chosen.items.length} (${size(chosen.size)}), ibdata1 de ${size(chosen.ibdata.size)}.`);
 
-    let root = null;
-    try {
-      root = await (await navigator.storage.getDirectory()).getDirectoryHandle(dir, { create: true });
-      const room = await navigator.storage.estimate();
-      if (room.quota && room.quota - room.usage < chosen.size * 1.02) {
-        throw new Error(`Falta espaço no navegador: o banco descompactado tem ${mb(chosen.size)} e há ${mb(room.quota - room.usage)} livres. ` +
-          'Libere espaço no disco ou extraia o .zip e escolha a pasta data.');
-      }
-    } catch (error) {
-      if (/Falta espaço/.test(error.message)) throw error;
-      root = null;   // sem OPFS: usa a memória
-      say('Este navegador não tem disco privado (OPFS): descompactando na memória, só serve para bancos pequenos.');
+    // Espaço no disco do navegador: o banco descompactado e, sem arquivo de destino, o dump que vem depois.
+    const need = chosen.size * (1.02 + (reserveRatio || 0));
+    const room = await navigator.storage.estimate();
+    if (room.quota && room.quota - room.usage < need) {
+      throw new Error(`Falta espaço no navegador: a recuperação precisa de cerca de ${size(need)} e há ${size(room.quota - room.usage)} livres. ` +
+        'Libere espaço no disco ou extraia o .zip e escolha a pasta data.');
     }
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(dir, { create: true });
 
     const files = [];
     let done = 0, lastPost = 0;
@@ -66,19 +65,17 @@ onmessage = async ({ data }) => {
         lastPost = now;
         postMessage({ progress: { done: done + current, total: chosen.size, name: item.name } });
       };
-      if (root) {
-        const sink = await opfsSink(root, item.name);
-        await item.entry.getData(sink.writable, { onprogress: report });
-        files.push({ name: item.name, data: await sink.file() });
-      } else {
-        files.push({ name: item.name, data: await item.entry.getData(new zip.BlobWriter(), { onprogress: report }) });
-      }
+      const sink = await opfsSink(root, item.name);
+      await item.entry.getData(sink.writable, { onprogress: report });
+      files.push({ name: item.name, data: await sink.file() });
       done += item.size;
     }
     postMessage({ progress: { done: chosen.size, total: chosen.size, name: '' } });
     await reader.close();
-    postMessage({ done: { files, mode: root ? 'opfs' : 'memory' } });
+    postMessage({ done: { files } });
   } catch (error) {
-    postMessage({ error: String((error && error.message) || error) });
+    const quota = error && error.name === 'QuotaExceededError';
+    postMessage({ error: quota ? 'O disco do navegador encheu durante a descompactação. Libere espaço ou extraia o .zip e escolha a pasta data.'
+      : String((error && error.message) || error) });
   }
 };

@@ -93,9 +93,9 @@ document.addEventListener('keydown', e => {
   else if (!e.shiftKey && document.activeElement === lastEl) { e.preventDefault(); firstEl.focus(); }
 });
 
-// ---------- escolher o banco: .rar, .zip ou a pasta data ----------
+// ---------- escolher o banco: .zip ou a pasta data ----------
 const EMPTY_TITLE = 'Solte aqui o banco';
-const EMPTY_SUB = 'arquivo .rar ou .zip, ou a pasta data';
+const EMPTY_SUB = 'arquivo .zip ou a pasta data';
 const fmtSize = bytes => bytes >= 1073741824 ? (bytes / 1073741824).toFixed(2).replace('.', ',') + ' GB'
   : (bytes / 1048576).toFixed(1).replace('.', ',') + ' MB';
 
@@ -107,7 +107,7 @@ function showSource(title, sub, filled) {
 function drawDest() {
   $('destLine').textContent = CAN_STREAM
     ? 'Ao recuperar, você escolhe onde salvar o .sql: ele é gravado direto no disco, tabela por tabela.'
-    : 'Este navegador guarda o dump na memória e baixa no fim. Para bancos grandes use o Chrome ou o Edge.';
+    : 'Este navegador guarda o dump no disco do navegador e baixa no fim: precisa de espaço livre extra. Para bancos grandes use o Chrome ou o Edge.';
 }
 drawDest();
 
@@ -123,13 +123,14 @@ async function useFolder(name, list) {
   note(chosen.copies > 1 ? 'Havia mais de um ibdata1 na pasta: usei o maior.' : '');
   askName(name);
 }
-// Um .rar ou .zip, por clique ou arrastado.
-const ARCHIVE = /\.(rar|zip)$/i;
+// Um .zip, por clique ou arrastado. O .rar não entra: o formato obriga a ler o arquivo inteiro na memória.
+const ARCHIVE = /\.zip$/i;
 function pickFile(files) {
   if (!files || !files.length || running()) return;
   const file = files[0];   // a lista do campo é viva: copia antes de limpar
   $('fileInput').value = '';
-  if (!ARCHIVE.test(file.name)) { note('Formato não suportado. Use .rar, .zip ou a pasta data.', true); return; }
+  if (/\.rar$/i.test(file.name)) { note('O .rar não é lido aqui: extraia-o e escolha a pasta data, ou use o programa de desktop.', true); return; }
+  if (!ARCHIVE.test(file.name)) { note('Formato não suportado. Use .zip ou a pasta data.', true); return; }
   picked = { kind: 'archive', name: file.name.replace(ARCHIVE, ''), file, size: file.size };
   projectName = '';
   note('');
@@ -245,7 +246,7 @@ async function startRecovery() {
 // AS ETAPAS (a estante e a dica): nome, descrição e a porcentagem em que cada uma começa.
 const STAGES = [
   { name: 'Preparação', start: 0, text: 'Liga o Python no navegador (Pyodide) e monta a lista de arquivos do banco.' },
-  { name: 'Descompactação', start: 3, text: 'Abre o .zip ou .rar e guarda só o que a leitura precisa (ibdata1, .frm, .ibd e .TRG). Com a pasta data, esta etapa não existe.' },
+  { name: 'Descompactação', start: 3, text: 'Abre o .zip e grava no disco do navegador só o que a leitura precisa (ibdata1, .frm, .ibd e .TRG). Com a pasta data, esta etapa não existe.' },
   { name: 'Dicionário do InnoDB', start: 15, text: 'Refaz as páginas rasgadas pelo doublewrite, varre o ibdata1 e lê as tabelas internas do InnoDB.' },
   { name: 'Leitura das tabelas', start: 24, text: 'Lê cada tabela direto das páginas, monta o CREATE TABLE e os INSERTs e grava no dump.' },
   { name: 'Chaves, views e triggers', start: 92, text: 'Recria as chaves estrangeiras do dicionário e as views e triggers dos arquivos da pasta.' },
@@ -259,11 +260,15 @@ let runSeq = 0;
 let extractDir = null;     // pasta temporária do OPFS onde o .zip foi descompactado (apagada ao fim)
 let extractHooks = null;   // para cancelar a descompactação
 
-// FAZ: começa uma recuperação. source = {files: [...]} (pasta data) ou {archive: File} (.rar ou .zip, que é
+// FAZ: começa uma recuperação. source = {files: [...]} (pasta data) ou {archive: File} (.zip, que é
 //   descompactado antes). onDone(relatório, blob) ou onDone({error}) só é usado pelo teste automático de desenvolvimento.
 function runRecovery(source, handle, name, onDone) {
   runSeq += 1;
-  last = { ...freshState(), state: 'RUNNING', mode: handle ? 'disk' : 'memory', savedName: handle ? handle.name : '', projectName: name,
+  // Sem o arquivo de destino escolhido (Firefox, Safari), o dump é guardado numa pasta do disco do navegador e baixado no
+  //   fim ('staged'). Nunca na memória: um dump de bancos grandes tem GBs.
+  cleanupDump();
+  dumpDir = handle ? null : tempName('dump');
+  last = { ...freshState(), state: 'RUNNING', mode: handle ? 'disk' : 'staged', savedName: handle ? handle.name : '', projectName: name,
     step_description: 'Preparando...', task: { label: 'Preparação', percent: null, detail: '' } };
   logs = [];
   shownError = false;
@@ -279,10 +284,10 @@ function runRecovery(source, handle, name, onDone) {
     .catch(error => { if (myRun === runSeq) { fail(error.message || String(error)); if (onDone) onDone({ error: error.message }); } });
 }
 
-// FAZ: descompacta o .rar ou .zip e devolve a lista de arquivos [{name, data: File}] (veja extract.js).
+// FAZ: descompacta o .zip e devolve a lista de arquivos [{name, data: File}] (veja extract.js).
 async function extractFirst(file, myRun) {
-  const { extractArchive, newDir } = await import('./extract.js');
-  extractDir = newDir();
+  const { extractArchive } = await import('./extract.js');
+  extractDir = tempName();
   setPhase(EXTRACT_FROM, 'Descompactando ' + file.name + '...', 'Descompactação', null);
   addLog(`Descompactando ${file.name} (${fmtSize(file.size)})...`);
   extractHooks = {
@@ -299,15 +304,26 @@ async function extractFirst(file, myRun) {
     },
     cancel: null,
   };
-  const result = await extractArchive(file, extractDir, extractHooks);
-  if (!result.dir) extractDir = null;   // .rar: ficou tudo na memória, não há pasta para apagar
-  addLog(`Descompactado: ${result.files.length} arquivos ${result.mode === 'opfs' ? 'no disco do navegador' : 'na memória'}.`);
+  // Sem destino escolhido o dump também vai para o disco do navegador: já reserva esse espaço na conferência.
+  const result = await extractArchive(file, extractDir, extractHooks, dumpDir ? 0.6 : 0);
+  addLog(`Descompactado: ${result.files.length} arquivos no disco do navegador.`);
   return result.files;
 }
-// Apaga o que a descompactação deixou no disco do navegador (o .sql já foi gravado ou está na memória).
+// Nome de uma pasta temporária no disco do navegador (OPFS); extract.js apaga as esquecidas depois de 1 hora.
+const tempName = suffix => 'rm-' + Date.now() + (suffix ? '-' + suffix : '');
+let dumpDir = null;        // pasta do OPFS onde o dump fica guardado quando não há arquivo de destino
+// Apaga o que a descompactação deixou no disco do navegador (o dump já foi gravado ou está guardado).
 async function cleanupExtracted() {
   const dir = extractDir;
   extractDir = null;
+  if (!dir) return;
+  const { cleanup } = await import('./extract.js');
+  await cleanup(dir);
+}
+// Apaga o dump guardado de uma recuperação anterior (ao começar outra, ou se esta falhar ou for cancelada).
+async function cleanupDump() {
+  const dir = dumpDir;
+  dumpDir = null;
   if (!dir) return;
   const { cleanup } = await import('./extract.js');
   await cleanup(dir);
@@ -352,7 +368,7 @@ function startWorker(list, handle, name, onDone) {
     else if (data.error) { fail(data.error); if (onDone) onDone({ error: data.error }); }
     else if (data.done) { finish(data.done, data.blob, name); if (onDone) onDone(data.done, data.blob); }
   };
-  worker.postMessage({ files: list, handle });
+  worker.postMessage({ files: list, handle, dumpDir });
   draw();
 }
 function setPhase(progress, text, label, percent, detail) {
@@ -367,6 +383,7 @@ function fail(message) {
   if (worker) worker.terminate();
   worker = null;
   cleanupExtracted();
+  cleanupDump();
   addLog(message);
   last.state = 'ERROR';
   last.step_description = 'A recuperação falhou.';
@@ -398,6 +415,7 @@ function cancelRecovery() {
   if (worker) worker.terminate();
   worker = null;
   cleanupExtracted();
+  cleanupDump();
   clearInterval(timer);
   last.state = 'CANCELLED';
   last.task = null; last.item = null;
@@ -727,7 +745,7 @@ draw();
 import('./extract.js').then(m => m.cleanupLeftovers()).catch(() => {});
 
 // Teste automático de desenvolvimento (dev/dev_server.py, só em localhost): ?auto=1 pega a pasta data do servidor local;
-// ?auto=archive pega o .zip ou .rar que ele serve em /archive. Confere se o arquivo montado tem o mesmo SHA-256 que o
+// ?auto=archive pega o .zip que ele serve em /archive. Confere se o arquivo montado tem o mesmo SHA-256 que o
 // Python calculou e devolve o resultado ao servidor.
 const AUTO = ['localhost', '127.0.0.1'].includes(location.hostname) ? new URLSearchParams(location.search).get('auto') : null;
 if (AUTO) {
