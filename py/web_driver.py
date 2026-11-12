@@ -176,6 +176,12 @@ class Recovery:
         self.status[name] = {"rows": rows, "status": "AVISO" if problem else "OK", "note": problem or ""}
         return self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8") + data + b"\n\n")
 
+    def info(self, index):
+        """JSON com o resultado da tabela de número `index` (a tela mostra cada tabela assim que ela termina)."""
+        name = self.tables[index][0]
+        status = self.status.get(name, {"rows": 0, "status": "NAO_LIDA", "note": ""})
+        return json.dumps({"name": name, **status}, ensure_ascii=False)
+
     def _foreign_keys(self):
         known, statements = {t.lower() for t in self.status}, []
         for fk in self.carver.foreign_keys():

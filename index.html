@@ -1,280 +1,233 @@
-<!doctype html>
-<html lang="pt-BR">
+<!DOCTYPE html>
+<html lang="pt-BR" data-theme="light">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Recuperador MySQL InnoDB (navegador)</title>
-<style>
-  :root { --ink: #111; --mute: #666; --line: #d9d9d9; --soft: #f4f4f4; --ok: #1a6b2f; --warn: #8a5a00; --bad: #a11; }
-  * { box-sizing: border-box; }
-  body { margin: 0; font: 15px/1.55 system-ui, "Segoe UI", sans-serif; color: var(--ink); background: #fff; }
-  header { background: var(--ink); color: #fff; padding: 18px 16px; }
-  header h1 { margin: 0 auto; max-width: 900px; font-size: 19px; font-weight: 600; }
-  main { max-width: 900px; margin: 0 auto; padding: 20px 16px 56px; }
-  section { border: 1px solid var(--line); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
-  h2 { margin: 0 0 8px; font-size: 16px; }
-  p, li, td { overflow-wrap: anywhere; }
-  p { margin: 6px 0; }
-  .mute { color: var(--mute); }
-  button, .pick { font: inherit; padding: 9px 16px; border-radius: 6px; border: 1px solid var(--ink); background: var(--ink);
-    color: #fff; cursor: pointer; display: inline-block; }
-  button.plain { background: #fff; color: var(--ink); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  button:focus-visible, .pick:focus-within { outline: 3px solid #5b9dff; outline-offset: 2px; }
-  .pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 10px; }
-  progress { width: 100%; height: 14px; }
-  pre { background: var(--soft); padding: 10px; margin: 10px 0 0; max-height: 220px; overflow: auto; font-size: 12.5px;
-    white-space: pre-wrap; word-break: break-word; }
-  .scroll { overflow-x: auto; }
-  table { border-collapse: collapse; width: 100%; font-size: 14px; }
-  th, td { border-bottom: 1px solid var(--line); padding: 5px 8px; text-align: left; vertical-align: top; }
-  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
-  .OK { color: var(--ok); } .AVISO { color: var(--warn); } .NAO_LIDA { color: var(--bad); }
-  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 10px 0; }
-  .facts div { background: var(--soft); border-radius: 6px; padding: 8px 10px; }
-  .facts b { display: block; font-size: 18px; }
-  [hidden] { display: none !important; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Recupera tabelas InnoDB de uma pasta data do MySQL direto no navegador. Os arquivos não saem do seu computador.">
+  <title>Recuperador de Banco MySQL</title>
+  <!-- O ícone da aba: os óculos da logo em PNGs de vários tamanhos (o navegador escolhe o mais próximo do que precisa). -->
+  <link rel="icon" type="image/png" sizes="32x32" href="static/icone-32.png">
+  <link rel="icon" type="image/png" sizes="48x48" href="static/icone-48.png">
+  <link rel="icon" type="image/png" sizes="64x64" href="static/icone-64.png">
+  <link rel="icon" type="image/png" sizes="128x128" href="static/icone-128.png">
+  <link rel="icon" type="image/png" sizes="256x256" href="static/icone.png">
+  <link rel="apple-touch-icon" href="static/icone.png">
+  <!-- O tema é escolhido antes de a página aparecer (evita piscar o tema errado). -->
+  <script src="static/theme-init.js"></script>
+  <link rel="stylesheet" href="static/app.css">
 </head>
 <body>
-<header><h1>Recuperador MySQL InnoDB &middot; versão navegador</h1></header>
-<main>
-  <section>
-    <h2>1. Escolha a pasta <code>data</code> do MySQL</h2>
-    <p class="mute">Os arquivos são lidos no seu computador. Nada é enviado para a internet.</p>
-    <div class="row">
-      <label class="pick">Escolher pasta data<input type="file" id="folder" webkitdirectory></label>
-      <span id="picked" class="mute">Nenhuma pasta escolhida.</span>
+  <!-- A página tem TRÊS COLUNAS dentro de uma moldura arredondada: (1) a barra escura de ícones, com a logo no canto
+         (ela também mostra e esconde o painel ao lado) e o botão do tema no pé; (2) o painel de listas, com os
+         filtros das tabelas; (3) a área de trabalho, que mostra UMA tela por vez (as seções .view). -->
+  <div class="shell">
+
+    <nav class="rail" aria-label="Telas">
+      <button class="logo" id="toggle" onclick="toggleSide()" title="Mostrar ou esconder o painel de tabelas"
+              aria-label="Abrir ou fechar o painel de tabelas" aria-controls="sidebar" aria-expanded="false">
+        <img src="static/logo_trilho.svg" alt="" width="42" height="34">
+        <span class="dot-led" id="led" aria-hidden="true"></span>
+      </button>
+      <div class="rail-nav">
+        <button class="rail-btn active" id="goRecover" data-view="recover" onclick="showView('recover')" title="Recuperar" aria-label="Recuperar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 10.5 12 4l7.5 6.5V19a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1z"/></svg>
+        </button>
+        <button class="rail-btn" id="goDownloads" data-view="downloads" onclick="showView('downloads')" title="Downloads" aria-label="Downloads">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v10.5M7.5 10.5 12 15l4.5-4.5M5 19.5h14"/></svg>
+        </button>
+        <button class="rail-btn" id="goLog" data-view="log" onclick="openLog()" title="Log completo" aria-label="Log completo">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5h7.5L19 9v10.5a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z"/><path d="M14 4.5V9h5M9 13h6M9 16.5h6"/></svg>
+        </button>
+        <button class="rail-btn" id="goHow" data-view="how" onclick="showView('how')" title="Como funciona?" aria-label="Como funciona?">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M9.8 9.6a2.3 2.3 0 0 1 4.4.9c0 1.6-2.2 1.9-2.2 3.2M12 16.6v.1"/></svg>
+        </button>
+      </div>
+      <!-- O BOTÃO DO TEMA: alterna entre o modo claro e o escuro; a escolha fica gravada no navegador. -->
+      <div class="rail-foot">
+        <button class="rail-btn" id="themeBtn" onclick="toggleTheme()" title="Modo escuro" aria-label="Modo escuro" aria-pressed="false">
+          <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.5 14.2A7.8 7.8 0 0 1 9.8 4.5a7.8 7.8 0 1 0 9.7 9.7z"/></svg>
+          <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.6"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18"/></svg>
+        </button>
+      </div>
+    </nav>
+
+    <aside class="list" id="sidebar" aria-label="Tabelas por situação">
+      <h1 class="list-title">Recuperação</h1>
+      <div class="list-scroll">
+        <button class="row" id="flt-all" onclick="setFilter(null)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="7" r="1.8"/><circle cx="5.5" cy="17" r="1.8"/><path d="M11 7h8.5M11 17h8.5"/></svg>
+          <span>Todas as tabelas</span><em id="cnt-all">0</em>
+        </button>
+
+        <div class="sep"></div>
+        <h3 class="list-sub">Status</h3>
+        <button class="row" id="flt-RECOVERED" onclick="setFilter('RECOVERED')">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="m8.5 12.3 2.4 2.4 4.6-5"/></svg>
+          <span>Recuperadas</span><em id="cnt-RECOVERED">0</em>
+        </button>
+        <button class="row" id="flt-PENDING" onclick="setFilter('PENDING')">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7.5V12l3 2"/></svg>
+          <span>Pendentes</span><em id="cnt-PENDING">0</em>
+        </button>
+        <button class="row" id="flt-WARNING" onclick="setFilter('WARNING')">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.5 21 19.5H3z"/><path d="M12 10v4.2M12 16.9v.1"/></svg>
+          <span>Com perda ou aviso</span><em id="cnt-WARNING">0</em>
+        </button>
+        <button class="row" id="flt-SKIPPED" onclick="setFilter('SKIPPED')">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M6.4 17.6 17.6 6.4"/></svg>
+          <span>Não lidas</span><em id="cnt-SKIPPED">0</em>
+        </button>
+      </div>
+      <!-- Selo no pé do painel: tudo roda no navegador, sem servidor. -->
+      <div class="pill on" id="pill"><i></i><span id="pillText">Roda no seu navegador</span></div>
+    </aside>
+
+    <main class="stage" id="stage">
+      <div class="stage-inner">
+
+        <!-- TELA RECUPERAR: soltar a pasta, Recuperar, Baixar e o Andamento. Quando a recuperação COMEÇA, o bloco de
+               cima (id recoverTop) se recolhe e sobra só o Andamento; ao terminar ele volta. -->
+        <section class="view show" id="view-recover">
+          <header class="stage-head"><h1>Recuperador de Banco MySQL</h1></header>
+
+          <div class="recover-top" id="recoverTop"><div class="recover-top-in">
+            <p class="lead">Solte a pasta <code>data</code> do banco corrompido, recupere e baixe o dump <code>.sql</code>. Tudo roda no seu computador: nada é enviado.</p>
+            <div class="drop" id="drop" role="button" tabindex="0" aria-describedby="dropSub"
+                 onclick="document.getElementById('folderInput').click()"
+                 onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); document.getElementById('folderInput').click(); }">
+              <input type="file" id="folderInput" webkitdirectory hidden onchange="pickFolderInput(this.files)">
+              <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+              </svg>
+              <h2 id="dropTitle">Solte aqui a pasta data</h2>
+              <p id="dropSub">a pasta do MySQL que tem o arquivo ibdata1</p>
+            </div>
+            <!-- Onde o .sql vai ficar: o app.js escreve conforme o navegador (Chrome e Edge gravam direto no disco). -->
+            <div class="dest-line" id="destLine"></div>
+
+            <div class="actions">
+              <button class="btn btn-run" id="btnRun" onclick="startRecovery()" disabled>
+                <div class="fill" id="runFill"></div><span id="runLabel" aria-live="polite">Recuperar</span>
+              </button>
+              <button class="btn btn-get" id="btnGet" onclick="onGet()" disabled>Baixar .sql</button>
+            </div>
+            <div class="main-note" id="mainNote" role="status" aria-live="polite"></div>
+            <div class="done-actions" id="doneActions" hidden>
+              <button type="button" class="small-btn" onclick="openReport()">Ver relatório</button>
+            </div>
+          </div></div>
+
+          <!-- ANDAMENTO: a estante de livros (andamento geral) no canto do título e, abaixo, as DUAS BARRAS: a de cima
+                 é a etapa em curso inteira; a fina é o pedaço que está sendo feito agora (a tabela). -->
+          <section class="card" id="cardProgress">
+            <header class="card-head">
+              <h2>Andamento <small class="elapsed" id="elapsed"></small></h2>
+              <div class="shelf-wrap">
+                <div class="shelf" id="shelf" role="img" aria-label="Andamento geral da recuperação: 0%"></div>
+                <span class="shelf-pct" id="shelfPct">0%</span>
+                <div class="shelf-tip" id="shelfTip" role="tooltip"></div>
+              </div>
+            </header>
+            <div class="step" id="stepText" role="status" aria-live="polite">Aguardando banco.</div>
+            <div class="bar-row"><span id="taskLabel">Andamento geral</span><span id="taskDetail"></span></div>
+            <div class="bar" id="bar" role="progressbar" aria-label="Progresso da etapa em curso" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="barFill"></div></div>
+            <div class="bar-row sub" id="itemRow"><span id="itemLabel">&nbsp;</span><span id="itemDetail"></span></div>
+            <div class="bar thin" id="barItem" aria-hidden="true"><div id="barItemFill"></div></div>
+            <button class="cancel" id="btnCancel" onclick="cancelRecovery()" style="display:none">Cancelar recuperação</button>
+            <div class="console" id="consoleBox" role="log" aria-live="off" aria-label="Registro da recuperação" tabindex="0">Sem atividade.</div>
+          </section>
+
+          <!-- RECUPERAÇÕES ANTERIORES: ficam gravadas neste navegador (nome, data, resumo e o relatório). Some enquanto uma
+                 recuperação roda. -->
+          <section class="card" id="cardHistory">
+            <header class="card-head"><h2>Recuperações anteriores</h2><span class="badge" id="histCount">0</span></header>
+            <div class="dl-list hist-list" id="histList"><p class="hint">Nenhuma recuperação concluída ainda.</p></div>
+            <div class="row-end" id="histClearRow" hidden><button type="button" class="link-btn" onclick="clearHistory()">Limpar histórico</button></div>
+          </section>
+        </section>
+
+        <!-- TELA TABELAS: uma linha por tabela do banco (nome, registros, status). O filtro vem do painel da esquerda. -->
+        <section class="view" id="view-tables">
+          <header class="stage-head"><h1>Tabelas recuperadas</h1><p id="tblCount">Escolha um grupo no painel ao lado.</p></header>
+          <section class="card">
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr>
+                  <th>Tabela</th>
+                  <th class="sortable" id="thRows" onclick="sortByRows()" onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); sortByRows(); }" tabindex="0" aria-sort="none" title="Clique para ordenar por registros">Registros <span class="arrow" id="arrRows" aria-hidden="true">⇅</span></th>
+                  <th>Status</th>
+                </tr></thead>
+                <tbody id="tblBody"><tr><td colspan="3" class="empty">Nenhuma tabela ainda.<span class="skel w60"></span><span class="skel w85"></span><span class="skel w40"></span></td></tr></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <!-- TELA DOWNLOADS: o dump SQL (quando o navegador o guardou na memória) e o relatório de auditoria. -->
+        <section class="view" id="view-downloads">
+          <header class="stage-head"><h1>Downloads</h1><p>Arquivos gerados pela última recuperação.</p></header>
+          <section class="card">
+            <div class="dl-list">
+              <div class="dl-item"><div>Dump SQL<small id="dlSqlInfo">Todas as tabelas e dados, em script</small></div><button type="button" class="small-btn" id="dlSql" onclick="download('sql')" disabled>Baixar</button></div>
+              <div class="dl-item"><div>Relatório de auditoria<small>Tabela por tabela: registros, avisos e SHA-256 do dump</small></div><button type="button" class="small-btn" id="dlReport" onclick="download('report')" disabled>Abrir</button></div>
+            </div>
+          </section>
+        </section>
+
+        <!-- TELA LOG COMPLETO: o texto do log, com botões para baixar .txt e copiar tudo (útil para enviar ao suporte em
+               caso de erro). Abre sozinha se a recuperação falhar. -->
+        <section class="view" id="view-log">
+          <header class="stage-head"><h1>Log completo</h1><p id="logHint">Copie e envie ao suporte em caso de erro.</p></header>
+          <section class="card">
+            <textarea id="logText" aria-label="Log completo da recuperação" readonly spellcheck="false">Sem atividade.</textarea>
+            <div class="row-end">
+              <span class="fb" id="logFb"></span>
+              <button class="small-btn" onclick="saveLog()">Baixar .txt</button>
+              <button class="small-btn primary" onclick="copyLog()">Copiar tudo</button>
+            </div>
+          </section>
+        </section>
+
+        <!-- TELA COMO FUNCIONA: o passo a passo desta versão. -->
+        <section class="view" id="view-how">
+          <header class="stage-head"><h1>Como funciona?</h1><p>Recuperação direta no navegador, passo a passo.</p></header>
+          <section class="card">
+            <ol class="how">
+              <li><b>Escolha a pasta data.</b> É a pasta do MySQL que tem o arquivo <code>ibdata1</code>. Se o banco está num <code>.rar</code> ou <code>.zip</code>, extraia antes. Você pode escolher a pasta pelo clique ou arrastá-la para a tela.</li>
+              <li><b>Dê um nome.</b> Ele vira o nome do arquivo <code>.sql</code> e identifica a recuperação no histórico.</li>
+              <li><b>Recupere.</b> No Chrome e no Edge você escolhe onde salvar o <code>.sql</code> e ele é gravado direto no disco, tabela por tabela. No Firefox e no Safari o dump fica na memória e é baixado no fim (só serve para bancos pequenos).</li>
+              <li><b>Sem servidor MySQL.</b> O Python roda dentro do navegador (Pyodide), lê as páginas do <code>ibdata1</code> e refaz a estrutura pelo dicionário do InnoDB e pelos <code>.frm</code>. Os arquivos não saem do seu computador; só o Pyodide é baixado da internet.</li>
+              <li><b>Confira.</b> O relatório mostra cada tabela, os registros lidos, os avisos de registros ilegíveis ou páginas perdidas e o SHA-256 do dump.</li>
+              <li><b>Importe.</b> Num MySQL, rode <code>mysql -uroot -p &lt; banco.sql</code>.</li>
+            </ol>
+            <div class="note-box">Esta versão gera só o dump <code>.sql</code>. Não gera pasta <code>data</code> nova, não lê tabelas MyISAM, rotinas e eventos, nem tabelas <code>COMPRESSED</code>, e não aceita MySQL 8.0 nem entrada <code>.sql</code>. Registros apagados há pouco tempo podem reaparecer. Para esses casos use o programa de desktop.</div>
+          </section>
+        </section>
+
+      </div>
+    </main>
+  </div>
+
+  <!-- O POP-UP CENTRAL: pede o NOME da recuperação ao escolher a pasta. -->
+  <div class="modal-bg" id="modalBg" onclick="if (event.target === this) closeModal()">
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1">
+      <div class="modal-head"><strong id="modalTitle">Nova recuperação</strong><button class="modal-x" onclick="closeModal()" title="Fechar (Esc)" aria-label="Fechar">✕</button></div>
+      <div class="modal-body">
+        <p class="hint">Dê um nome a esta recuperação. Ele vira o nome do arquivo <code>.sql</code> e aparece no histórico.</p>
+        <label class="field-label" for="nameInput">Nome</label>
+        <input type="text" id="nameInput" aria-label="Nome da recuperação" maxlength="80" placeholder="Ex.: Farmácia do João - outubro" onkeydown="if (event.key === 'Enter') confirmName()">
+        <p class="field-info" id="nameInfo"></p>
+        <p class="field-info err" id="nameError" role="alert"></p>
+        <div class="row-end">
+          <button class="small-btn" onclick="cancelName()">Cancelar</button>
+          <button class="small-btn primary" onclick="confirmName()">Continuar</button>
+        </div>
+      </div>
     </div>
-    <p class="mute">Se o banco está num <code>.rar</code> ou <code>.zip</code>, extraia antes e escolha a pasta extraída.</p>
-  </section>
+  </div>
 
-  <section>
-    <h2>2. Recuperar</h2>
-    <p id="hint" class="mute"></p>
-    <div class="row">
-      <button id="run" disabled>Recuperar</button>
-      <button id="cancel" class="plain" hidden>Cancelar</button>
-    </div>
-    <div id="work" hidden>
-      <p id="status" role="status" aria-live="polite"></p>
-      <label class="mute" for="bar">Tabelas</label>
-      <progress id="bar" value="0" max="1"></progress>
-      <label class="mute" for="sub">Tabela em curso</label>
-      <progress id="sub" value="0" max="1"></progress>
-      <pre id="log" aria-label="Log da recuperação" tabindex="0"></pre>
-    </div>
-  </section>
-
-  <section id="result" hidden>
-    <h2>3. Resultado</h2>
-    <div id="summary"></div>
-    <div class="row">
-      <button id="download" hidden>Baixar .sql</button>
-      <button id="report" class="plain">Salvar relatório (.html)</button>
-    </div>
-  </section>
-
-  <section>
-    <h2>O que esta versão faz</h2>
-    <p>Lê as tabelas <strong>InnoDB</strong> direto das páginas do <code>ibdata1</code> (ou dos <code>.ibd</code>), sem o
-      servidor MySQL, e gera um dump <code>.sql</code> com estrutura, dados, chaves estrangeiras, views e triggers.</p>
-    <p class="mute">Não faz: pasta <code>data</code> nova, tabelas MyISAM, rotinas e eventos, tabelas
-      <code>ROW_FORMAT=COMPRESSED</code>, MySQL 8.0, entrada <code>.sql</code>. Registros apagados há pouco tempo podem
-      reaparecer. Para esses casos use o programa de desktop.</p>
-  </section>
-</main>
-
-<script>
-const $ = (id) => document.getElementById(id);
-const SKIP = /^(ib_logfile\d+|.*\.(err|pid))$/i;       // não servem para a leitura direta
-const canStream = "showSaveFilePicker" in window;        // Chrome e Edge gravam o dump direto no disco
-const mb = (bytes) => (bytes / 1048576).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + " MB";
-let files = null, worker = null, started = 0, timer = null, lastReport = null;
-
-$("hint").textContent = canStream
-  ? "Você escolhe onde salvar o .sql e ele é gravado direto no disco, tabela por tabela."
-  : "Este navegador guarda o dump na memória e baixa no fim. Para bancos grandes use o Chrome ou o Edge.";
-
-// A pasta escolhida pode ser a própria data ou uma pasta acima dela: acha o ibdata1 (o maior, se houver vários) e
-// usa a pasta dele como raiz. Só entram os arquivos da raiz e das pastas dos bancos.
-function chooseData(list) {
-  const all = list.map((f) => ({ path: f.webkitRelativePath || f.name, file: f }));
-  const roots = all.filter((f) => f.path.split("/").pop() === "ibdata1").sort((a, b) => b.file.size - a.file.size);
-  if (!roots.length) return null;
-  const prefix = roots[0].path.slice(0, -"ibdata1".length);
-  const chosen = all.filter((f) => f.path.startsWith(prefix))
-    .map((f) => ({ name: f.path.slice(prefix.length), data: f.file }))
-    .filter((f) => f.name.split("/").length <= 2 && !SKIP.test(f.name));
-  return { files: chosen, ibdata: roots[0].file, copies: roots.length };
-}
-
-$("folder").addEventListener("change", (event) => {
-  const picked = chooseData([...event.target.files]);
-  files = picked ? picked.files : null;
-  $("run").disabled = !files;
-  $("picked").textContent = picked
-    ? `ibdata1 de ${mb(picked.ibdata.size)}, ${files.length} arquivos.` + (picked.copies > 1 ? " Havia mais de um ibdata1: usei o maior." : "")
-    : "A pasta escolhida não tem o arquivo ibdata1.";
-});
-
-$("run").addEventListener("click", async () => {
-  let handle = null;
-  if (canStream) {
-    try {
-      handle = await showSaveFilePicker({ suggestedName: "banco_recuperado.sql",
-        types: [{ description: "Dump SQL", accept: { "application/sql": [".sql"] } }] });
-    } catch (error) {
-      if (error.name === "AbortError") return;   // o usuário fechou a janela de salvar
-      throw error;
-    }
-  }
-  start(files, handle);
-});
-
-$("cancel").addEventListener("click", () => {
-  if (worker) worker.terminate();
-  stop("Recuperação cancelada. O arquivo original não foi alterado.");
-});
-
-function log(text) {
-  const el = $("log");
-  el.textContent += text + "\n";
-  el.scrollTop = el.scrollHeight;
-}
-
-function stop(message) {
-  clearInterval(timer);
-  worker = null;
-  $("status").textContent = message;
-  $("cancel").hidden = true;
-  $("run").disabled = !files;
-  $("folder").disabled = false;
-}
-
-function start(list, handle, onDone) {
-  $("work").hidden = false;
-  $("result").hidden = true;
-  $("cancel").hidden = false;
-  $("run").disabled = true;
-  $("folder").disabled = true;
-  $("log").textContent = "";
-  $("bar").value = 0;
-  $("sub").value = 0;
-  started = Date.now();
-  let stage = "Iniciando...";
-  const tick = () => { $("status").textContent = `${stage} (${Math.round((Date.now() - started) / 1000)} s)`; };
-  timer = setInterval(tick, 1000);
-  worker = new Worker("worker.js");
-  worker.onerror = (event) => { log(event.message); stop("ERRO: " + event.message); };
-  worker.onmessage = ({ data }) => {
-    if (data.log) return log(data.log);
-    if (data.stage) { stage = data.stage; return tick(); }
-    if (data.pages) { $("sub").max = Math.max(1, data.pages.total); $("sub").value = data.pages.done; return; }
-    if (data.progress) {
-      $("bar").max = Math.max(1, data.progress.total);
-      $("bar").value = data.progress.done;
-      $("sub").value = 0;
-      stage = `Tabela ${Math.min(data.progress.done + 1, data.progress.total)} de ${data.progress.total}: ${data.progress.name}`;
-      return tick();
-    }
-    if (data.error) {
-      log(data.error);
-      const lines = data.error.trim().split("\n");
-      stop("ERRO: " + lines[lines.length - 1]);
-      if (onDone) onDone({ error: data.error });
-      return;
-    }
-    stop(`Concluído em ${data.done.segundos} s.` + (handle ? " O .sql foi gravado no local escolhido." : ""));
-    show(data.done, data.blob);
-    if (onDone) onDone(data.done, data.blob);
-  };
-  worker.postMessage({ files: list, handle });
-}
-
-// Monta o resumo com elementos (nunca com HTML colado): nomes de tabela vêm do banco e não são confiáveis.
-function el(tag, text, className) {
-  const node = document.createElement(tag);
-  if (text !== undefined) node.textContent = text;
-  if (className) node.className = className;
-  return node;
-}
-
-function show(report, blob) {
-  lastReport = report;
-  const names = Object.keys(report.tabelas);
-  const count = (status) => names.filter((n) => report.tabelas[n].status === status).length;
-  const box = $("summary");
-  box.textContent = "";
-  const facts = el("div", undefined, "facts");
-  for (const [value, label] of [
-    [report.banco, "banco"], [names.length, "tabelas"], [report.registros.toLocaleString("pt-BR"), "registros"],
-    [mb(report.sql_bytes), "tamanho do .sql"], [count("AVISO"), "com aviso"], [count("NAO_LIDA"), "não lidas"],
-    [`${report.objetos.chaves_estrangeiras} / ${report.objetos.views} / ${report.objetos.triggers}`, "FKs / views / triggers"],
-    [report.paginas_refeitas_doublewrite, "páginas refeitas (doublewrite)"]]) {
-    const fact = el("div");
-    fact.append(el("b", String(value)), el("span", label, "mute"));
-    facts.append(fact);
-  }
-  box.append(facts, el("p", "SHA-256 do .sql: " + report.sha256, "mute"));
-  if (report.avisos.length) {
-    box.append(el("h3", `Avisos (${report.avisos.length})`));
-    const list = el("ul");
-    report.avisos.forEach((text) => list.append(el("li", text)));
-    box.append(list);
-  }
-  const wrap = el("div", undefined, "scroll"), table = el("table"), head = el("tr");
-  head.append(el("th", "Tabela"), el("th", "Registros", "n"), el("th", "Status"), el("th", "Observação"));
-  table.append(head);
-  // Problemas primeiro, depois ordem alfabética.
-  names.sort((a, b) => (report.tabelas[a].status === "OK") - (report.tabelas[b].status === "OK") || a.localeCompare(b));
-  for (const name of names) {
-    const info = report.tabelas[name], row = el("tr");
-    row.append(el("td", name), el("td", info.rows.toLocaleString("pt-BR"), "n"),
-      el("td", { OK: "OK", AVISO: "Aviso", NAO_LIDA: "Não lida" }[info.status], info.status), el("td", info.note));
-    table.append(row);
-  }
-  wrap.append(table);
-  box.append(wrap);
-  $("download").hidden = !blob;
-  $("download").onclick = () => save(blob, `${report.banco}_recuperado.sql`);
-  $("result").hidden = false;
-}
-
-function save(blob, name) {
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = name;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 60000);
-}
-
-$("report").addEventListener("click", () => {
-  const style = document.querySelector("style").outerHTML;
-  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório ${lastReport.banco}</title>${style}</head>` +
-    `<body><main><h1>Relatório da recuperação</h1><p class="mute">${new Date().toLocaleString("pt-BR")}</p>${$("summary").innerHTML}</main></body></html>`;
-  save(new Blob([html], { type: "text/html" }), `relatorio_${lastReport.banco}.html`);
-});
-
-// Teste automático de desenvolvimento (dev/dev_server.py, só em localhost): pega a pasta data do servidor local,
-// confere se o arquivo montado tem o mesmo SHA-256 que o Python calculou e devolve o resultado ao servidor.
-if (["localhost", "127.0.0.1"].includes(location.hostname) && new URLSearchParams(location.search).has("auto")) {
-  (async () => {
-    const names = await (await fetch("/list", { cache: "no-store" })).json();
-    const list = [];
-    // no-store: senão o navegador reaproveita arquivos de outra pasta data testada antes no mesmo endereço.
-    for (const name of names) list.push({ name, data: await (await fetch("/data/" + name, { cache: "no-store" })).blob() });
-    start(list, null, async (report, blob) => {
-      if (blob) {
-        const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()));
-        report.arquivo_bytes = blob.size;
-        report.arquivo_sha256 = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
-      }
-      fetch("/result", { method: "POST", body: JSON.stringify(report) });
-    });
-  })();
-}
-</script>
+  <script src="static/app.js"></script>
 </body>
 </html>

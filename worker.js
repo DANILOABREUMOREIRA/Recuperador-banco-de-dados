@@ -5,11 +5,12 @@ importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
 
 const MODULES = ["innodb_carver", "page_health", "mysql_codec", "frm_parser", "dictionary_rebuild", "web_driver"];
 
-// Recebe { files: [{name: "ibdata1" | "banco/tabela.frm", data: File}], handle: FileSystemFileHandle | null }.
+// Recebe { files: [{name: "ibdata1" | "banco/tabela.frm", data: File}], handle: FileSystemFileHandle | null } e avisa a
+// tela do que acontece: {phase}, {log}, {planned}, {tableStart}, {pages}, {table}, {done} ou {error}.
 onmessage = async ({ data }) => {
   let writable = null;
   try {
-    postMessage({ stage: "Ligando o Python no navegador..." });
+    postMessage({ phase: "prep" });
     const pyodide = await loadPyodide();
     for (const name of MODULES) {
       const response = await fetch(`py/${name}.py`);
@@ -23,7 +24,7 @@ onmessage = async ({ data }) => {
     const recovery = pyodide.globals.get("recovery");
     recovery.on_pages = (done, total) => postMessage({ pages: { done, total } });
 
-    // Com a pasta de destino escolhida (Chrome/Edge) cada pedaço vai direto para o disco. Sem ela (Firefox/Safari)
+    // Com o arquivo de destino escolhido (Chrome/Edge) cada pedaço vai direto para o disco. Sem ele (Firefox/Safari)
     // os pedaços ficam guardados pelo navegador e viram um download no fim.
     const parts = [];
     if (data.handle) writable = await data.handle.createWritable();
@@ -35,15 +36,18 @@ onmessage = async ({ data }) => {
       else parts.push(new Blob([bytes]));
     };
 
-    postMessage({ stage: "Lendo o dicionário do ibdata1..." });
+    postMessage({ phase: "dict" });
     await write(recovery.plan());
     const names = JSON.parse(pyodide.runPython("json.dumps([name for name, _ in recovery.tables])"));
+    postMessage({ planned: names });
     for (let index = 0; index < names.length; index++) {
-      postMessage({ progress: { done: index, total: names.length, name: names[index] } });
+      postMessage({ tableStart: { index, total: names.length, name: names[index] } });
       await write(recovery.table(index));
+      postMessage({ table: JSON.parse(recovery.info(index)) });
     }
-    postMessage({ progress: { done: names.length, total: names.length, name: "chaves estrangeiras, views e triggers" } });
+    postMessage({ phase: "objects" });
     await write(recovery.finish());
+    postMessage({ phase: "close" });
     if (writable) await writable.close();
     postMessage({ done: JSON.parse(recovery.report()), blob: writable ? null : new Blob(parts, { type: "application/sql" }) });
   } catch (error) {

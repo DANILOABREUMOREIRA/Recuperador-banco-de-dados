@@ -15,6 +15,13 @@ navegador pelo [Pyodide](https://pyodide.org).
    No Firefox e no Safari o dump fica na memória e é baixado no fim (só para bancos pequenos).
 4. Importe o `.sql` num MySQL: `mysql -uroot -p < banco_recuperado.sql`
 
+## Interface
+
+É a do programa de desktop: barra escura de ícones (Recuperar, Downloads, Log completo, Como funciona?), painel de
+tabelas por status, estante de livros com o andamento geral e duas barras (a etapa e a tabela em curso). O botão de lua
+e sol, no pé da barra, alterna entre o modo claro e o escuro. Ficou de fora o que depende do Windows: Query Browser,
+*Abrir pasta*, *Salvar em* e os formatos `.zip`/`.rar`. As recuperações anteriores ficam gravadas no próprio navegador.
+
 ## O que faz
 
 - Lê o dicionário interno do InnoDB (`SYS_TABLES`, `SYS_COLUMNS`, `SYS_INDEXES`, `SYS_FIELDS`) e os registros das
@@ -53,7 +60,11 @@ sem comando de build e sem pasta de saída. No GitHub Pages: publique a raiz do 
 ## Estrutura
 
 ```
-index.html            tela (escolher pasta, andamento, resultado, relatório)
+index.html            tela: a mesma interface do programa de desktop (3 colunas, estante de livros, duas barras)
+static/app.css        visual, com modo claro e modo escuro (variáveis de cor em :root e :root[data-theme="dark"])
+static/app.js         lógica da tela: pasta, nome, andamento, tabelas, histórico (neste navegador), relatório
+static/theme-init.js  escolhe o tema antes de a página aparecer (o gravado, ou o do sistema)
+static/*.png, *.svg   ícone dos óculos (aba do navegador) e logo da barra; favicon.ico na raiz
 worker.js             liga o Pyodide, monta os arquivos (WORKERFS) e grava o dump
 py/web_driver.py      orquestra a leitura direta e monta o dump em pedaços
 py/innodb_carver.py   leitura das páginas do InnoDB          (cópia do desktop)
