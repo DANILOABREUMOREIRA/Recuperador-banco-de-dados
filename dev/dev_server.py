@@ -2,7 +2,8 @@
 dev_server.py - Servidor local para testar o site (só 127.0.0.1). Serve a pasta do site e, para o teste automático
 (http://127.0.0.1:8765/?auto=1), uma pasta data do disco, sem precisar escolhê-la à mão.
 
-Uso: python dev/dev_server.py <pasta data>
+Uso: python dev/dev_server.py [pasta data] [arquivo .zip/.rar]
+?auto=1 testa a pasta data; ?auto=archive testa o arquivo (servido em /archive).
 O resultado do navegador fica em dev/resultado_navegador.json.
 """
 import functools
@@ -15,7 +16,8 @@ import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SITE = os.path.dirname(HERE)
-DATA = sys.argv[1] if len(sys.argv) > 1 else None
+DATA = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] != "-" else None
+ARCHIVE = sys.argv[2] if len(sys.argv) > 2 else None
 SKIP = re.compile(r"^(ib_logfile\d+|.*\.(err|pid))$", re.I)   # o mesmo que a página deixa de fora
 
 
@@ -50,6 +52,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if self.path.split("?")[0] == "/archive" and ARCHIVE:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(os.path.getsize(ARCHIVE)))
+            self.send_header("X-Archive-Name", urllib.parse.quote(os.path.basename(ARCHIVE)))
+            self.end_headers()
+            with open(ARCHIVE, "rb") as f:
+                while chunk := f.read(1 << 20):
+                    self.wfile.write(chunk)
             return
         super().do_GET()
 

@@ -93,11 +93,9 @@ document.addEventListener('keydown', e => {
   else if (!e.shiftKey && document.activeElement === lastEl) { e.preventDefault(); firstEl.focus(); }
 });
 
-// ---------- escolher a pasta data ----------
-const EMPTY_TITLE = 'Solte aqui a pasta data';
-const EMPTY_SUB = 'a pasta do MySQL que tem o arquivo ibdata1';
-// Não servem para a leitura direta: os logs do InnoDB, .err e .pid.
-const SKIPPED = /^(ib_logfile\d+|.*\.(err|pid))$/i;
+// ---------- escolher o banco: .rar, .zip ou a pasta data ----------
+const EMPTY_TITLE = 'Solte aqui o banco';
+const EMPTY_SUB = 'arquivo .rar ou .zip, ou a pasta data';
 const fmtSize = bytes => bytes >= 1073741824 ? (bytes / 1073741824).toFixed(2).replace('.', ',') + ' GB'
   : (bytes / 1048576).toFixed(1).replace('.', ',') + ' MB';
 
@@ -113,25 +111,29 @@ function drawDest() {
 }
 drawDest();
 
-// A pasta escolhida pode ser a própria data ou uma pasta acima dela: acha o ibdata1 (o maior, se houver vários) e usa a
-//   pasta dele como raiz. Só entram os arquivos da raiz e das pastas dos bancos (profundidade até 2).
-function chooseData(list) {
-  const all = list.map(f => ({ path: f.path, file: f.file }));
-  const roots = all.filter(f => f.path.split('/').pop() === 'ibdata1').sort((a, b) => b.file.size - a.file.size);
-  if (!roots.length) return null;
-  const prefix = roots[0].path.slice(0, -'ibdata1'.length);
-  const files = all.filter(f => f.path.startsWith(prefix))
-    .map(f => ({ name: f.path.slice(prefix.length), data: f.file }))
-    .filter(f => f.name.split('/').length <= 2 && !SKIPPED.test(f.name.split('/').pop()));
-  return { files, ibdata: roots[0].file, copies: roots.length, size: files.reduce((sum, f) => sum + f.data.size, 0) };
-}
-function useFolder(name, list) {
-  const chosen = chooseData(list);
+// A pasta escolhida pode ser a própria data ou uma pasta acima dela: select.js acha o ibdata1 (o maior, se houver
+//   vários) e usa a pasta dele como raiz. picked = {kind: 'folder', name, files, ibdata, size} ou
+//   {kind: 'archive', name, file, size}.
+async function useFolder(name, list) {
+  const { selectData } = await import('./select.js');
+  const chosen = selectData(list.map(f => ({ path: f.path, size: f.file.size, file: f.file })));
   if (!chosen) { note('A pasta não tem o arquivo ibdata1: não parece uma pasta data do MySQL.', true); return; }
-  picked = { name, ...chosen };
+  picked = { kind: 'folder', name, files: chosen.items.map(i => ({ name: i.name, data: i.file })), ibdata: chosen.ibdata.file, size: chosen.size };
   projectName = '';
   note(chosen.copies > 1 ? 'Havia mais de um ibdata1 na pasta: usei o maior.' : '');
   askName(name);
+}
+// Um .rar ou .zip, por clique ou arrastado.
+const ARCHIVE = /\.(rar|zip)$/i;
+function pickFile(files) {
+  if (!files || !files.length || running()) return;
+  const file = files[0];   // a lista do campo é viva: copia antes de limpar
+  $('fileInput').value = '';
+  if (!ARCHIVE.test(file.name)) { note('Formato não suportado. Use .rar, .zip ou a pasta data.', true); return; }
+  picked = { kind: 'archive', name: file.name.replace(ARCHIVE, ''), file, size: file.size };
+  projectName = '';
+  note('');
+  askName(picked.name);
 }
 // Pasta ARRASTADA: a API de arquivos do navegador entrega os itens em lotes; lê recursivamente.
 function readDirectory(entry, prefix) {
@@ -169,8 +171,7 @@ function pickFolderInput(files) {
     if (running()) return;
     // As entradas precisam ser lidas já no evento; depois dele o navegador as invalida.
     const entries = [...(e.dataTransfer.items || [])].map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
-    if (entries.length === 1 && entries[0].isDirectory) pickFolderEntry(entries[0]);
-    else note('Solte a pasta data já extraída. Banco em .rar ou .zip: extraia antes.', true);
+    if (entries.length === 1 && entries[0].isDirectory) pickFolderEntry(entries[0]); else pickFile(e.dataTransfer.files);
   });
   ['dragover', 'drop'].forEach(ev => window.addEventListener(ev, e => e.preventDefault()));
 })();
@@ -180,7 +181,8 @@ function askName(suggestion) {
   nameOpen = true;
   $('nameInput').value = projectName || suggestion;
   $('nameError').textContent = '';
-  $('nameInfo').textContent = `Pasta ${picked.name}: ${picked.files.length} arquivos, ibdata1 de ${fmtSize(picked.ibdata.size)}.`;
+  $('nameInfo').textContent = picked.kind === 'archive' ? `Arquivo ${picked.file.name}: ${fmtSize(picked.size)}.`
+    : `Pasta ${picked.name}: ${picked.files.length} arquivos, ibdata1 de ${fmtSize(picked.ibdata.size)}.`;
   openModal();
   setTimeout(() => { $('nameInput').focus(); $('nameInput').select(); }, 50);
 }
@@ -189,7 +191,8 @@ function confirmName() {
   if (!value) { $('nameInput').focus(); return; }
   projectName = value;
   nameOpen = false;
-  showSource(projectName, 'pasta ' + picked.name + ' (' + picked.files.length + ' arquivos, ' + fmtSize(picked.size) + ') — pronto para recuperar', true);
+  showSource(projectName, (picked.kind === 'archive' ? 'arquivo ' + picked.file.name + ' (' + fmtSize(picked.size) + ')'
+    : 'pasta ' + picked.name + ' (' + picked.files.length + ' arquivos, ' + fmtSize(picked.size) + ')') + ' — pronto para recuperar', true);
   closeModal();
   // Escolher outra pasta começa do zero: some o resultado anterior e o Baixar volta a ficar bloqueado.
   if (last.state !== 'IDLE') { last = freshState(); logs = []; draw(); }
@@ -236,22 +239,30 @@ async function startRecovery() {
     }
   }
   note('');
-  runRecovery(picked.files, handle, projectName);
+  runRecovery(picked.kind === 'archive' ? { archive: picked.file } : { files: picked.files }, handle, projectName);
 }
 
 // AS ETAPAS (a estante e a dica): nome, descrição e a porcentagem em que cada uma começa.
 const STAGES = [
-  { name: 'Preparação', start: 0, text: 'Lista os arquivos da pasta e liga o Python no navegador (Pyodide).' },
-  { name: 'Dicionário do InnoDB', start: 6, text: 'Refaz as páginas rasgadas pelo doublewrite, varre o ibdata1 e lê as tabelas internas do InnoDB.' },
-  { name: 'Leitura das tabelas', start: 20, text: 'Lê cada tabela direto das páginas, monta o CREATE TABLE e os INSERTs e grava no dump.' },
+  { name: 'Preparação', start: 0, text: 'Liga o Python no navegador (Pyodide) e monta a lista de arquivos do banco.' },
+  { name: 'Descompactação', start: 3, text: 'Abre o .zip ou .rar e guarda só o que a leitura precisa (ibdata1, .frm, .ibd e .TRG). Com a pasta data, esta etapa não existe.' },
+  { name: 'Dicionário do InnoDB', start: 15, text: 'Refaz as páginas rasgadas pelo doublewrite, varre o ibdata1 e lê as tabelas internas do InnoDB.' },
+  { name: 'Leitura das tabelas', start: 24, text: 'Lê cada tabela direto das páginas, monta o CREATE TABLE e os INSERTs e grava no dump.' },
   { name: 'Chaves, views e triggers', start: 92, text: 'Recria as chaves estrangeiras do dicionário e as views e triggers dos arquivos da pasta.' },
   { name: 'Fechamento', start: 97, text: 'Fecha o arquivo .sql e monta o resumo e o relatório.' },
 ];
-const TABLES_FROM = 20, TABLES_SPAN = 72;   // a etapa das tabelas vai de 20% a 92%
+const EXTRACT_FROM = 3, EXTRACT_SPAN = 12, DICT_FROM = 15;   // a descompactação vai de 3% a 15%
+const TABLES_FROM = 24, TABLES_SPAN = 68;                    // a etapa das tabelas vai de 24% a 92%
 
-// FAZ: liga o Web Worker e traduz as mensagens dele em andamento na tela. onDone(relatório, blob) ou onDone({error}) só
-//   é usado pelo teste automático de desenvolvimento.
-function runRecovery(list, handle, name, onDone) {
+// A cada recuperação um número: se o usuário cancelar, o que ainda chegar do trabalho antigo é ignorado.
+let runSeq = 0;
+let extractDir = null;     // pasta temporária do OPFS onde o .zip foi descompactado (apagada ao fim)
+let extractHooks = null;   // para cancelar a descompactação
+
+// FAZ: começa uma recuperação. source = {files: [...]} (pasta data) ou {archive: File} (.rar ou .zip, que é
+//   descompactado antes). onDone(relatório, blob) ou onDone({error}) só é usado pelo teste automático de desenvolvimento.
+function runRecovery(source, handle, name, onDone) {
+  runSeq += 1;
   last = { ...freshState(), state: 'RUNNING', mode: handle ? 'disk' : 'memory', savedName: handle ? handle.name : '', projectName: name,
     step_description: 'Preparando...', task: { label: 'Preparação', percent: null, detail: '' } };
   logs = [];
@@ -259,14 +270,61 @@ function runRecovery(list, handle, name, onDone) {
   startedAt = Date.now();
   clearInterval(timer);
   timer = setInterval(() => { last.elapsed_s = Math.round((Date.now() - startedAt) / 1000); drawElapsed(); }, 1000);
+  addLog(`Recuperação "${name}" iniciada.`);
+  draw();
+  if (!source.archive) { startWorker(source.files, handle, name, onDone); return; }
+  const myRun = runSeq;
+  extractFirst(source.archive, myRun)
+    .then(files => { if (myRun === runSeq) startWorker(files, handle, name, onDone); })
+    .catch(error => { if (myRun === runSeq) { fail(error.message || String(error)); if (onDone) onDone({ error: error.message }); } });
+}
+
+// FAZ: descompacta o .rar ou .zip e devolve a lista de arquivos [{name, data: File}] (veja extract.js).
+async function extractFirst(file, myRun) {
+  const { extractArchive, newDir } = await import('./extract.js');
+  extractDir = newDir();
+  setPhase(EXTRACT_FROM, 'Descompactando ' + file.name + '...', 'Descompactação', null);
+  addLog(`Descompactando ${file.name} (${fmtSize(file.size)})...`);
+  extractHooks = {
+    log: text => { if (myRun === runSeq) addLog(text); },
+    phase: text => { if (myRun === runSeq) setPhase(EXTRACT_FROM, text, 'Descompactação', null); },
+    progress: p => {
+      if (myRun !== runSeq) return;
+      const part = p.done / Math.max(1, p.total);
+      last.progress = Math.round(EXTRACT_FROM + EXTRACT_SPAN * part);
+      last.step_description = 'Descompactando ' + file.name + (p.name ? ': ' + p.name : '');
+      last.task = { label: 'Descompactação', percent: Math.round(100 * part), detail: `${fmtSize(p.done)} de ${fmtSize(p.total)}` };
+      last.item = { label: p.name, percent: null, detail: '' };
+      scheduleDraw();
+    },
+    cancel: null,
+  };
+  const result = await extractArchive(file, extractDir, extractHooks);
+  if (!result.dir) extractDir = null;   // .rar: ficou tudo na memória, não há pasta para apagar
+  addLog(`Descompactado: ${result.files.length} arquivos ${result.mode === 'opfs' ? 'no disco do navegador' : 'na memória'}.`);
+  return result.files;
+}
+// Apaga o que a descompactação deixou no disco do navegador (o .sql já foi gravado ou está na memória).
+async function cleanupExtracted() {
+  const dir = extractDir;
+  extractDir = null;
+  if (!dir) return;
+  const { cleanup } = await import('./extract.js');
+  await cleanup(dir);
+}
+
+// FAZ: liga o Web Worker do Python e traduz as mensagens dele em andamento na tela.
+function startWorker(list, handle, name, onDone) {
+  const myRun = runSeq;
   let names = [], tableNo = 0;
-  addLog(`Recuperação "${name}" iniciada. ${list.length} arquivos, ibdata1 de ${fmtSize(list.find(f => f.name === 'ibdata1').data.size)}.`);
+  addLog(`${list.length} arquivos, ibdata1 de ${fmtSize(list.find(f => f.name === 'ibdata1').data.size)}.`);
   worker = new Worker('worker.js');
-  worker.onerror = event => fail(event.message || 'Erro ao iniciar o Python no navegador.');
+  worker.onerror = event => { if (myRun === runSeq) fail(event.message || 'Erro ao iniciar o Python no navegador.'); };
   worker.onmessage = ({ data }) => {
+    if (myRun !== runSeq) return;
     if (data.log) { addLog(data.log); return; }
-    if (data.phase === 'prep') { setPhase(2, 'Ligando o Python no navegador...', 'Preparação', null); }
-    else if (data.phase === 'dict') { setPhase(6, 'Lendo o dicionário do ibdata1...', 'Dicionário do InnoDB', null); }
+    if (data.phase === 'prep') { setPhase(Math.max(last.progress, 2), 'Ligando o Python no navegador...', 'Preparação', null); }
+    else if (data.phase === 'dict') { setPhase(DICT_FROM, 'Lendo o dicionário do ibdata1...', 'Dicionário do InnoDB', null); }
     else if (data.phase === 'objects') { setPhase(93, 'Chaves estrangeiras, views e triggers...', 'Chaves, views e triggers', null); }
     else if (data.phase === 'close') { setPhase(98, 'Fechando o arquivo...', 'Fechamento', null); }
     else if (data.planned) {
@@ -306,7 +364,9 @@ function setPhase(progress, text, label, percent, detail) {
 }
 function fail(message) {
   clearInterval(timer);
+  if (worker) worker.terminate();
   worker = null;
+  cleanupExtracted();
   addLog(message);
   last.state = 'ERROR';
   last.step_description = 'A recuperação falhou.';
@@ -315,7 +375,9 @@ function fail(message) {
 }
 function finish(report, blob, name) {
   clearInterval(timer);
+  if (worker) worker.terminate();   // solta os arquivos que o Python mantinha abertos
   worker = null;
+  cleanupExtracted();
   Object.keys(report.tabelas).forEach(n => { last.tables[n] = report.tabelas[n]; });
   last.state = 'COMPLETED';
   last.progress = 100;
@@ -331,8 +393,11 @@ function finish(report, blob, name) {
 }
 function cancelRecovery() {
   if (!confirm('Cancelar a recuperação em andamento?\n\nO progresso desta execução será descartado. Os arquivos originais não são alterados.')) return;
+  runSeq += 1;   // o que ainda chegar do trabalho antigo é ignorado
+  if (extractHooks && extractHooks.cancel) extractHooks.cancel();
   if (worker) worker.terminate();
   worker = null;
+  cleanupExtracted();
   clearInterval(timer);
   last.state = 'CANCELLED';
   last.task = null; last.item = null;
@@ -658,21 +723,33 @@ if (typeof Worker === 'undefined' || typeof WebAssembly === 'undefined') {
 }
 draw();
 
-// Teste automático de desenvolvimento (dev/dev_server.py, só em localhost): pega a pasta data do servidor local, confere se
-// o arquivo montado tem o mesmo SHA-256 que o Python calculou e devolve o resultado ao servidor.
-if (['localhost', '127.0.0.1'].includes(location.hostname) && new URLSearchParams(location.search).has('auto')) {
+// Ao abrir: apaga o que uma execução anterior deixou no disco do navegador (fechada no meio da descompactação).
+import('./extract.js').then(m => m.cleanupLeftovers()).catch(() => {});
+
+// Teste automático de desenvolvimento (dev/dev_server.py, só em localhost): ?auto=1 pega a pasta data do servidor local;
+// ?auto=archive pega o .zip ou .rar que ele serve em /archive. Confere se o arquivo montado tem o mesmo SHA-256 que o
+// Python calculou e devolve o resultado ao servidor.
+const AUTO = ['localhost', '127.0.0.1'].includes(location.hostname) ? new URLSearchParams(location.search).get('auto') : null;
+if (AUTO) {
   (async () => {
-    const names = await (await fetch('/list', { cache: 'no-store' })).json();
-    const list = [];
-    // no-store: senão o navegador reaproveita arquivos de outra pasta data testada antes no mesmo endereço.
-    for (const name of names) list.push({ name, data: await (await fetch('/data/' + name, { cache: 'no-store' })).blob() });
-    runRecovery(list, null, 'auto', async (report, blob) => {
+    const finishTest = async (report, blob) => {
       if (blob) {
         const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()));
         report.arquivo_bytes = blob.size;
         report.arquivo_sha256 = [...digest].map(b => b.toString(16).padStart(2, '0')).join('');
       }
       fetch('/result', { method: 'POST', body: JSON.stringify(report) });
-    });
+    };
+    if (AUTO === 'archive') {
+      const response = await fetch('/archive', { cache: 'no-store' });
+      const file = new File([await response.blob()], decodeURIComponent(response.headers.get('X-Archive-Name') || 'banco.zip'));
+      runRecovery({ archive: file }, null, 'auto', finishTest);
+      return;
+    }
+    const names = await (await fetch('/list', { cache: 'no-store' })).json();
+    const list = [];
+    // no-store: senão o navegador reaproveita arquivos de outra pasta data testada antes no mesmo endereço.
+    for (const name of names) list.push({ name, data: await (await fetch('/data/' + name, { cache: 'no-store' })).blob() });
+    runRecovery({ files: list }, null, 'auto', finishTest);
   })();
 }

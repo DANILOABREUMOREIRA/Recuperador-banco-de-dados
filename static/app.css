@@ -241,6 +241,8 @@ body.running .recover-top { grid-template-rows: 0fr; opacity: 0; margin-top: -22
 body.running #cardHistory { display: none; }
 .link-btn { background: none; border: none; color: var(--muted-2); font-size: .86rem; cursor: pointer; text-decoration: underline; padding: 4px 0; }
 .link-btn:hover { color: var(--text); }
+/* O link 'ou escolher a pasta data' fica centralizado logo sob a área de soltar. */
+.folder-link { display: block; margin: 10px auto 0; }
 
 .actions { display: flex; gap: 12px; margin-top: 16px; }
 .btn {
@@ -282,10 +284,11 @@ body.running #cardHistory { display: none; }
 .shelf i::before { top: 13%; }
 .shelf i::after { top: 25%; }
 .shelf i[data-stage="0"], .tip-dot[data-stage="0"] { --nerv: #c9ced8; }   /* preparação: cinza azulado */
-.shelf i[data-stage="1"], .tip-dot[data-stage="1"] { --nerv: #f2cdb3; }   /* dicionário: damasco */
-.shelf i[data-stage="2"], .tip-dot[data-stage="2"] { --nerv: #c2dfb6; }   /* tabelas: sálvia */
-.shelf i[data-stage="3"], .tip-dot[data-stage="3"] { --nerv: #a4d6d2; }   /* chaves, views e triggers: água */
-.shelf i[data-stage="4"], .tip-dot[data-stage="4"] { --nerv: #b3c6ee; }   /* fechamento: pervinca */
+.shelf i[data-stage="1"], .tip-dot[data-stage="1"] { --nerv: #f2cdb3; }   /* descompactação: damasco */
+.shelf i[data-stage="2"], .tip-dot[data-stage="2"] { --nerv: #f0e3b4; }   /* dicionário: manteiga */
+.shelf i[data-stage="3"], .tip-dot[data-stage="3"] { --nerv: #c2dfb6; }   /* tabelas: sálvia */
+.shelf i[data-stage="4"], .tip-dot[data-stage="4"] { --nerv: #a4d6d2; }   /* chaves, views e triggers: água */
+.shelf i[data-stage="5"], .tip-dot[data-stage="5"] { --nerv: #b3c6ee; }   /* fechamento: pervinca */
 .shelf i.on::before, .shelf i.on::after { background: var(--nerv, var(--book-line)); }
 .shelf i.hot { transform: translateY(-3px); box-shadow: inset 0 0 0 1px var(--book-edge), 0 5px 9px rgba(20, 24, 33, .16); }
 .shelf-tip { position: absolute; right: 0; top: calc(100% + 12px); width: 292px; max-width: 80vw; padding: 12px 14px 13px; background: var(--tip-bg); color: var(--tip-text); border-radius: 13px; box-shadow: 0 16px 36px rgba(20, 24, 33, .3); font-size: .82rem; line-height: 1.5; z-index: 30; pointer-events: none; opacity: 0; visibility: hidden; transform: translateY(-4px); transition: opacity .15s ease, transform .15s ease, visibility 0s .15s; }

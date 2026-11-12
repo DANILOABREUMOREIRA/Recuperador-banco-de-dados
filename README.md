@@ -1,7 +1,7 @@
 # Recuperador MySQL InnoDB - versão navegador
 
-Recupera tabelas **InnoDB** de uma pasta `data` do MySQL 5.x direto no navegador, sem instalar nada e sem servidor.
-Os arquivos são lidos no computador do usuário: nada é enviado para a internet.
+Recupera tabelas **InnoDB** de um banco MySQL 5.x (pasta `data`, `.zip` ou `.rar`) direto no navegador, sem instalar
+nada e sem servidor. Os arquivos são lidos no computador do usuário: nada é enviado para a internet.
 
 É o "modo de leitura direta" do programa de desktop (método TwinDB undrop-for-innodb), rodando em Python dentro do
 navegador pelo [Pyodide](https://pyodide.org).
@@ -9,18 +9,30 @@ navegador pelo [Pyodide](https://pyodide.org).
 ## Como usar
 
 1. Abra o site.
-2. Clique em **Escolher pasta data** e aponte para a pasta `data` do MySQL (a que tem o `ibdata1`).
-   Banco em `.rar` ou `.zip`: extraia antes.
-3. Clique em **Recuperar**. No Chrome e no Edge você escolhe onde salvar o `.sql` e ele é gravado direto no disco.
-   No Firefox e no Safari o dump fica na memória e é baixado no fim (só para bancos pequenos).
+2. Solte na tela, ou clique para escolher, um **`.zip`**, um **`.rar`** ou a pasta **`data`** do MySQL (a que tem o
+   `ibdata1`). A pasta também pode ser escolhida pelo link *ou escolher a pasta data*.
+3. Dê um nome e clique em **Recuperar**. No Chrome e no Edge você escolhe onde salvar o `.sql` e ele é gravado direto no
+   disco. No Firefox e no Safari o dump fica na memória e é baixado no fim (só para bancos pequenos).
 4. Importe o `.sql` num MySQL: `mysql -uroot -p < banco_recuperado.sql`
 
 ## Interface
 
 É a do programa de desktop: barra escura de ícones (Recuperar, Downloads, Log completo, Como funciona?), painel de
-tabelas por status, estante de livros com o andamento geral e duas barras (a etapa e a tabela em curso). O botão de lua
-e sol, no pé da barra, alterna entre o modo claro e o escuro. Ficou de fora o que depende do Windows: Query Browser,
-*Abrir pasta*, *Salvar em* e os formatos `.zip`/`.rar`. As recuperações anteriores ficam gravadas no próprio navegador.
+tabelas por status, estante de livros com o andamento geral e duas barras (a etapa e o item em curso). O botão de lua
+e sol, no pé da barra, alterna entre o modo claro e o escuro. Ficou de fora o que depende do Windows ou de um servidor
+MySQL: Query Browser, *Abrir pasta*, *Salvar em* e a pasta `data` nova na saída. As recuperações anteriores ficam
+gravadas no próprio navegador.
+
+## Entrada: pasta, .zip e .rar
+
+| Entrada | Como é lida | Limite |
+|---|---|---|
+| Pasta `data` | Os arquivos são lidos direto do disco, aos pedaços, sem copiar | Só o tamanho que o Python aguenta por tabela |
+| `.zip` | [zip.js](https://gildas-lormeau.github.io/zip.js/) lê o arquivo aos pedaços e grava no disco privado do navegador (OPFS) só o que a leitura precisa; tudo é apagado no fim | O espaço livre que o navegador oferece (aparece um aviso se faltar) |
+| `.rar` (v4 e v5) | [libarchive.js](https://github.com/nika-begiashvili/libarchivejs) (WebAssembly) lê o arquivo inteiro na memória e extrai numa passada | Até uns 2 GB: o arquivo e o conteúdo precisam caber na memória do WebAssembly. Acima disso, extraia antes e escolha a pasta |
+
+Do `.zip` e do `.rar` só entram o `ibdata1`, os `.frm`, `.ibd` e `.TRG`. Os `.MYD`/`.MYI` fora de `mysql/` viram
+arquivos vazios (só o nome importa). Arquivo com senha é recusado com uma mensagem.
 
 ## O que faz
 
@@ -36,11 +48,12 @@ e sol, no pé da barra, alterna entre o modo claro e o escuro. Ficou de fora o q
 
 Use o programa de desktop para estes casos:
 
-- gerar uma pasta `data` nova (aqui sai só o `.sql`);
+- gerar uma pasta `data` nova: isso exige um servidor MySQL para importar o dump e gravar os arquivos do InnoDB, e o
+  navegador não tem um (aqui sai só o `.sql`);
 - tabelas MyISAM, rotinas e eventos (só o servidor MySQL os lê);
 - `CHECK TABLE` e conferência de linhas órfãs no banco novo;
 - tabelas `ROW_FORMAT=COMPRESSED`, páginas diferentes de 16 KB, MySQL 8.0;
-- entrada `.sql`, `.rar` ou `.zip`.
+- entrada `.sql`.
 
 Limitação do método: registros apagados há pouco tempo podem reaparecer (páginas antigas já liberadas).
 
@@ -48,7 +61,7 @@ Limitação do método: registros apagados há pouco tempo podem reaparecer (pá
 
 - Cada tabela é montada inteira na memória antes de ir para o disco. O navegador dá de 2 a 4 GB ao Python: uma
   tabela sozinha com vários GB não cabe.
-- Testado com `ibdata1` de 210 MB e 578 MB. Acima disso ainda não foi testado.
+- Testado com `ibdata1` de 210 MB (pasta, `.zip` e `.rar` reais) e de 578 MB (pasta). Acima disso ainda não foi testado.
 - Cerca de 2 vezes mais lento que o Python do desktop.
 - O Pyodide vem de `cdn.jsdelivr.net`: precisa de internet para abrir o site.
 
@@ -62,10 +75,15 @@ sem comando de build e sem pasta de saída. No GitHub Pages: publique a raiz do 
 ```
 index.html            tela: a mesma interface do programa de desktop (3 colunas, estante de livros, duas barras)
 static/app.css        visual, com modo claro e modo escuro (variáveis de cor em :root e :root[data-theme="dark"])
-static/app.js         lógica da tela: pasta, nome, andamento, tabelas, histórico (neste navegador), relatório
+static/app.js         lógica da tela: banco, nome, andamento, tabelas, histórico (neste navegador), relatório
+static/select.js      escolhe quais arquivos entram (acha o ibdata1, filtra logs e caminhos suspeitos)
+static/extract.js     descompacta .zip e .rar e limpa o disco do navegador depois
 static/theme-init.js  escolhe o tema antes de a página aparecer (o gravado, ou o do sistema)
 static/*.png, *.svg   ícone dos óculos (aba do navegador) e logo da barra; favicon.ico na raiz
+zip-worker.js         lê o .zip aos pedaços e grava no OPFS
 worker.js             liga o Pyodide, monta os arquivos (WORKERFS) e grava o dump
+vendor/zip            zip.js 2.24.0 (BSD-3-Clause)
+vendor/libarchive     libarchive.js 2.0.2 (MIT), com um ajuste local: veja PATCHES.md
 py/web_driver.py      orquestra a leitura direta e monta o dump em pedaços
 py/innodb_carver.py   leitura das páginas do InnoDB          (cópia do desktop)
 py/page_health.py     checksum, página rasgada, doublewrite  (cópia do desktop)
@@ -89,13 +107,15 @@ python py/web_driver.py <pasta data> saida.sql relatorio.json
 Teste automático no navegador (compara o SHA-256 do arquivo com o que o Python calculou):
 
 ```
-python dev/dev_server.py <pasta data>
+python dev/dev_server.py <pasta data> [arquivo .zip ou .rar]
 ```
 
-e abra `http://127.0.0.1:8765/?auto=1`. O resultado fica em `dev/resultado_navegador.json`; o campo `sha256` tem de
-ser igual ao do relatório gerado pelo Python comum.
+Abra `http://127.0.0.1:8765/?auto=1` para a pasta ou `?auto=archive` para o arquivo (use `-` no lugar da pasta se só
+quiser o arquivo). O resultado fica em `dev/resultado_navegador.json`; o campo `sha256` tem de ser igual ao do relatório
+gerado pelo Python comum.
 
 ## Licença
 
 GPL-2.0 (arquivo `LICENSE`). `py/innodb_carver.py` porta a lógica de formato do
-[TwinDB undrop-for-innodb](https://github.com/twindb/undrop-for-innodb), que é GPL-2.0.
+[TwinDB undrop-for-innodb](https://github.com/twindb/undrop-for-innodb), que é GPL-2.0. As bibliotecas em `vendor/`
+mantêm as licenças delas (arquivos `LICENSE` em cada pasta).
