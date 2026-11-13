@@ -43,15 +43,34 @@ entra.
 Do `.zip` só entram o `ibdata1`, os `.frm`, `.ibd` e `.TRG`. Os `.MYD`/`.MYI` fora de `mysql/` viram arquivos vazios
 (só o nome importa). Arquivo com senha é recusado com uma mensagem.
 
-### O que ainda impede 20 GB
+### Tabelas grandes: leitura em lotes
 
-- **Memória por tabela.** O motor lê todas as linhas de uma tabela antes de gerar o SQL. Medido: o pico é de **5 a 9
-  vezes** o tamanho da tabela em páginas (`nfcexml`: 38 MB de páginas, pico de 196 MB; `produto`: 12,6 MB, pico de
-  118 MB). Com cerca de 2 GB úteis no Python do navegador, uma tabela com mais de uns 300 MB de páginas não cabe. Num
-  banco de 20 GB isso é provável. A saída é ler a tabela em lotes, sem juntar tudo; ainda não foi feita.
+O leitor de páginas do desktop (`carve()`) junta todas as linhas de uma tabela antes de gerar o SQL. Medido: o pico de
+memória é de **5 a 9 vezes** o tamanho da tabela em páginas, e o Python do navegador tem cerca de 2 GB. Por isso, a
+tabela com **mais de 64 MB de páginas** (4096 folhas de 16 KB) é lida por `py/stream_carver.py`:
+
+- parte da página **raiz** e desce pelos nós internos, como o MySQL faz, lendo só as folhas da árvore viva, na ordem da
+  chave, em lotes de até 4000 linhas ou 8 MB; cada lote vai para o disco antes do próximo;
+- folha que nenhum nó vivo cita é página liberada e não é lida. Isso difere do `carve()`, que também devolve linhas de
+  páginas liberadas ("registros apagados que reaparecem"). Conferido: em `cclasstrib` o MySQL confirma 155 linhas
+  íntegras e a leitura pela árvore devolve 155; a leitura por cadeia de folhas devolvia 530, por seguir cadeias antigas;
+- se a árvore está danificada (raiz ou nó interno ilegível), cai para as cadeias de folhas ligadas nos dois sentidos, que
+  recuperam mais mas podem trazer páginas antigas; o relatório diz qual modo foi usado.
+
+As tabelas menores seguem no `carve()`, com o comportamento de sempre (o dump de `dataoriginal` continua com o mesmo
+SHA-256).
+
+**Medido** (navegador, banco de 578 MB, `nfcexml` com 177 MB de páginas): memória do Python 781 MB com o método antigo e
+**258 MB** em lotes, mesmas 949.532 linhas. Em todas as tabelas de dois bancos reais, a leitura em lotes devolveu o mesmo
+conteúdo do `carve()`, exceto linhas que só existiam em páginas liberadas.
+
+### O que ainda precisa de medida para 20 GB
+
 - **Espaço em disco.** O `.zip` precisa do banco descompactado no disco do navegador, mais o dump (cerca de 0,55 vez o
   tamanho) fora do Chrome e do Edge.
 - **Tempo.** Cerca de 2 vezes o do desktop; por extrapolação, perto de 1h40 para 20 GB. Não medido.
+- **Memória das estruturas por página.** A varredura e a árvore guardam alguns dados por página (cerca de 100 bytes):
+  20 GB são 1,3 milhão de páginas. Não medido no navegador.
 
 ## O que faz
 
@@ -102,12 +121,15 @@ zip-worker.js         lê o .zip aos pedaços e grava no OPFS
 worker.js             liga o Pyodide, monta os arquivos (WORKERFS) e grava o dump
 vendor/zip            zip.js 2.24.0 (BSD-3-Clause)
 py/web_driver.py      orquestra a leitura direta e monta o dump em pedaços
+py/stream_carver.py   lê tabelas grandes em lotes, pela árvore viva (novo; o resto de py/ é cópia do desktop)
 py/innodb_carver.py   leitura das páginas do InnoDB          (cópia do desktop)
 py/page_health.py     checksum, página rasgada, doublewrite  (cópia do desktop)
 py/frm_parser.py      .frm, views e triggers                 (cópia do desktop)
 py/dictionary_rebuild.py  tabelas sem linha no dicionário    (cópia do desktop)
 py/mysql_codec.py     DECIMAL/DATE/TIME/DATETIME             (cópia do desktop)
 dev/dev_server.py     servidor local de teste
+dev/digest_run.py     roda a recuperação e guarda contagem e impressão digital do conteúdo de cada tabela
+dev/corromper.py      corrompe de propósito uma CÓPIA de uma pasta data e anota o resultado esperado
 ```
 
 Os cinco módulos marcados como cópia vêm de `programa/sistema/` do programa de desktop, sem alteração. Ao mudar o

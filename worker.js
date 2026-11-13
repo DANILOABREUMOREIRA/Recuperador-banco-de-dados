@@ -3,7 +3,7 @@
 // memória, e a tela não trava enquanto o Python trabalha.
 importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
 
-const MODULES = ["innodb_carver", "page_health", "mysql_codec", "frm_parser", "dictionary_rebuild", "web_driver"];
+const MODULES = ["innodb_carver", "page_health", "mysql_codec", "frm_parser", "dictionary_rebuild", "stream_carver", "web_driver"];
 
 // Recebe { files: [{name: "ibdata1" | "banco/tabela.frm", data: File}], handle: FileSystemFileHandle | null,
 //   dumpDir } e avisa a tela do que acontece: {phase}, {log}, {planned}, {tableStart}, {pages}, {table}, {done} ou {error}.
@@ -22,7 +22,9 @@ onmessage = async ({ data }) => {
     pyodide.FS.mkdir("/data");
     pyodide.FS.mount(pyodide.FS.filesystems.WORKERFS, { blobs: data.files }, "/data");
     pyodide.globals.set("js_log", (message) => postMessage({ log: message }));
-    pyodide.runPython('import json, web_driver\nrecovery = web_driver.Recovery("/data", log=js_log)');
+    // streamPages (só nos testes de desenvolvimento) troca o limite de folhas a partir do qual a tabela é lida em lotes.
+    pyodide.globals.set("stream_pages", data.streamPages === undefined ? null : data.streamPages);
+    pyodide.runPython('import json, web_driver\nrecovery = web_driver.Recovery("/data", log=js_log, stream_pages=stream_pages)');
     const recovery = pyodide.globals.get("recovery");
     recovery.on_pages = (done, total) => postMessage({ pages: { done, total } });
 
@@ -53,7 +55,9 @@ onmessage = async ({ data }) => {
     postMessage({ planned: names });
     for (let index = 0; index < names.length; index++) {
       postMessage({ tableStart: { index, total: names.length, name: names[index] } });
-      await put(recovery.table(index));
+      // A tabela sai em pedaços: cada um vai para o disco antes de o Python montar o próximo.
+      recovery.begin_table(index);
+      for (let chunk = recovery.next_chunk(); chunk !== undefined; chunk = recovery.next_chunk()) await put(chunk);
       postMessage({ table: JSON.parse(recovery.info(index)) });
     }
     postMessage({ phase: "objects" });
@@ -62,7 +66,8 @@ onmessage = async ({ data }) => {
     let blob = null;
     if (writable) await writable.close();
     else { staged.access.flush(); staged.access.close(); blob = await staged.handle.getFile(); }
-    postMessage({ done: JSON.parse(recovery.report()), blob });
+    // A memória do WebAssembly só cresce: o tamanho no fim é o pico que o Python usou.
+    postMessage({ done: JSON.parse(recovery.report()), blob, heapMB: Math.round(pyodide._module.HEAPU8.length / 1048576) });
   } catch (error) {
     if (writable) await writable.abort().catch(() => {});
     if (staged) { try { staged.access.close(); } catch (e) { /* já fechado */ } }

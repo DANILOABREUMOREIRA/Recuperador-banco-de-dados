@@ -16,9 +16,13 @@ import re
 import sys
 import time
 
+# O Python portátil do desktop ignora a pasta do script e acha os módulos na pasta do programa: aqui vale a destes arquivos.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import dictionary_rebuild
 import frm_parser
 from innodb_carver import CarverError, InnodbCarver, ddl_from_dictionary, rows_to_sql
+from stream_carver import stream_table
 
 # Mesmos valores do programa de desktop (engine_common.py / engine_objects.py), para o dump sair igual.
 HIDDEN_SCHEMAS = {"mysql", "performance_schema", "information_schema", "test"}
@@ -32,13 +36,20 @@ SQL_HEADER = (
     "USE `{db}`;\n\n"
 )
 OBJECT_HEADER = "-- Objetos do banco (views, triggers, rotinas e eventos)\n"
+# 4096 folhas de 16 KB = 64 MB. O pico de memória do carve() é de 5 a 9 vezes o tamanho da tabela: até 64 MB cabe com
+#   folga nos 2 GB do navegador; acima disso a tabela é lida em lotes.
+STREAM_PAGES = int(os.environ.get("RECUPERADOR_STREAM_PAGES", 4096))
 
 
 class Recovery:
     """Uso: plan() -> cabeçalho; table(i) para cada tabela -> pedaço do dump; finish() -> rodapé; report() -> resumo."""
 
-    def __init__(self, data_dir, log=print):
+    def __init__(self, data_dir, log=print, stream_pages=None):
         self.data_dir, self.log = data_dir, log
+        # Tabelas com mais folhas que isto são lidas em lotes (veja _is_big). RECUPERADOR_STREAM_PAGES troca o limite nos
+        #   testes (0 = toda tabela em lotes).
+        self.stream_pages = STREAM_PAGES if stream_pages is None else stream_pages
+        self._parts = iter(())
         self.started = time.time()
         self.carver, self.db, self.folder = None, None, None
         self.tables = []        # [(nome, só_no_dicionário)]
@@ -134,15 +145,37 @@ class Recovery:
         for name, why in sorted(missed.items()):
             self.log(f"  {name}: dados não localizados ({why}).")
 
+    # A tabela sai em PEDAÇOS: quem chama pede um de cada vez (begin_table + next_chunk) e grava, então uma tabela de
+    #   GBs nunca fica inteira na memória. table() junta os pedaços, para quem não precisa disso (testes, linha de comando).
+    def begin_table(self, index):
+        """Começa a tabela de número `index`; os pedaços do dump vêm de next_chunk()."""
+        self._parts = self._table_parts(index)
+
+    def next_chunk(self):
+        """Próximo pedaço do dump da tabela em curso (bytes), ou None quando ela acabou."""
+        return next(self._parts, None)
+
     def table(self, index):
-        """Extrai a tabela de número `index` e devolve o pedaço dela no dump (DROP + CREATE + INSERTs)."""
+        """O dump inteiro da tabela de número `index` (DROP + CREATE + INSERTs), de uma vez."""
+        return b"".join(self._table_parts(index))
+
+    # Tabela com mais folhas que isto (64 MB de páginas por padrão) é lida em lotes (stream_carver); as menores continuam
+    #   no carve() de sempre, que também recupera registros de páginas liberadas.
+    def _is_big(self, tdef):
+        try:
+            ts = self.carver.table_space(tdef)
+            return len(ts.leaf_pages.get(self.carver.clustered_id(tdef, ts), [])) > self.stream_pages
+        except CarverError:
+            return False   # o carve() levanta o mesmo erro e o relatório mostra
+
+    def _table_parts(self, index):
         name, dict_only = self.tables[index]
         full = f"{self.db}/{name}"
         if not dict_only and self._is_myisam(name):
             self.status[name] = {"rows": 0, "status": "NAO_LIDA",
                                  "note": "MyISAM: só o servidor MySQL lê esta tabela; não entrou no dump."}
             self.warn(f"Tabela {name}: MyISAM, não lida (use o programa de desktop para ela).")
-            return b""
+            return
         hint = None if dict_only else frm_parser.read_table_ddl(os.path.join(self.folder, name + ".frm"), name)
         tdef = self.carver.table(full)
         if not tdef:
@@ -151,30 +184,51 @@ class Recovery:
                 self.status[name] = {"rows": 0, "status": "NAO_LIDA",
                                      "note": "Sem estrutura legível (.frm inválido e fora do dicionário); não recriada."}
                 self.warn(f"Tabela {name}: sem estrutura legível; ignorada.")
-                return b""
+                return
             self.no_fk[name.lower()] = name
             self.status[name] = {"rows": 0, "status": "AVISO",
                                  "note": "Estrutura recriada pelo .frm, mas os dados não foram localizados nas páginas."}
             self.warn(f"Tabela {name}: estrutura recriada, dados não localizados.")
-            return self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{hint};\n\n\n".encode("utf8"))
+            yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{hint};\n\n\n".encode("utf8"))
+            return
 
         ddl = ddl_from_dictionary(tdef, hint)
-        data, rows, problem = b"", 0, None
-        try:
-            columns, records, stats = self.carver.carve(full, ddl_hint=hint, progress=self.on_pages)
-            data, rows = rows_to_sql(name, columns, records), len(records)
-            if stats["bad_records"]:
-                problem = f"{stats['bad_records']} registros ilegíveis descartados"
-            lost = self.carver.lost_leaf_pages(full)
-            if lost:
-                problem = "; ".join(x for x in (problem, f"ao menos {len(lost)} página(s) da tabela perdida(s)") if x)
-        except (CarverError, OSError) as e:
-            problem = f"leitura direta falhou: {e}"
+        rows, problem, info = 0, None, ""
+        if self._is_big(tdef):
+            yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8"))
+            stats = {}
+            try:
+                for columns, records in stream_table(self.carver, full, ddl_hint=hint, progress=self.on_pages, stats=stats):
+                    rows += len(records)
+                    yield self._emit(rows_to_sql(name, columns, records) + b"\n")
+                if stats.get("bad_records"):
+                    problem = f"{stats['bad_records']} registros ilegíveis descartados"
+                lost = self.carver.lost_leaf_pages(full)
+                if lost:
+                    problem = "; ".join(x for x in (problem, f"ao menos {len(lost)} página(s) da tabela perdida(s)") if x)
+            except (CarverError, OSError) as e:
+                problem = f"leitura direta falhou: {e}"
+            info = f"tabela grande, lida em lotes pela cadeia de folhas ({stats.get('leaf_pages', 0):,} páginas)".replace(",", ".")
+            if stats.get("loose_pages"):
+                info += f"; {stats['loose_pages']} página(s) fora da árvore (liberadas) não lidas"
+            yield self._emit(b"\n")
+        else:
+            data = b""
+            try:
+                columns, records, stats = self.carver.carve(full, ddl_hint=hint, progress=self.on_pages)
+                data, rows = rows_to_sql(name, columns, records), len(records)
+                if stats["bad_records"]:
+                    problem = f"{stats['bad_records']} registros ilegíveis descartados"
+                lost = self.carver.lost_leaf_pages(full)
+                if lost:
+                    problem = "; ".join(x for x in (problem, f"ao menos {len(lost)} página(s) da tabela perdida(s)") if x)
+            except (CarverError, OSError) as e:
+                problem = f"leitura direta falhou: {e}"
+            yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8") + data + b"\n\n")
         if problem:
             self.warn(f"Tabela {name}: {problem}")
         self.no_fk[name.lower()] = name
-        self.status[name] = {"rows": rows, "status": "AVISO" if problem else "OK", "note": problem or ""}
-        return self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8") + data + b"\n\n")
+        self.status[name] = {"rows": rows, "status": "AVISO" if problem else "OK", "note": "; ".join(x for x in (problem, info) if x)}
 
     def info(self, index):
         """JSON com o resultado da tabela de número `index` (a tela mostra cada tabela assim que ela termina)."""
@@ -281,7 +335,9 @@ if __name__ == "__main__":
     with open(sys.argv[2], "wb") as out:
         out.write(recovery.plan())
         for number in range(len(recovery.tables)):
-            out.write(recovery.table(number))
+            recovery.begin_table(number)          # pedaço a pedaço, como o navegador: tabela grande nunca fica inteira na memória
+            while (chunk := recovery.next_chunk()) is not None:
+                out.write(chunk)
         out.write(recovery.finish())
     summary = json.loads(recovery.report())
     if len(sys.argv) > 3:

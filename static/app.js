@@ -255,6 +255,7 @@ const STAGES = [
 const EXTRACT_FROM = 3, EXTRACT_SPAN = 12, DICT_FROM = 15;   // a descompactação vai de 3% a 15%
 const TABLES_FROM = 24, TABLES_SPAN = 68;                    // a etapa das tabelas vai de 24% a 92%
 
+const IS_LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);   // só o servidor de teste aceita ?auto e ?stream
 // A cada recuperação um número: se o usuário cancelar, o que ainda chegar do trabalho antigo é ignorado.
 let runSeq = 0;
 let extractDir = null;     // pasta temporária do OPFS onde o .zip foi descompactado (apagada ao fim)
@@ -366,9 +367,16 @@ function startWorker(list, handle, name, onDone) {
     }
     else if (data.table) { last.tables[data.table.name] = data.table; last.item = null; scheduleDraw(true); }
     else if (data.error) { fail(data.error); if (onDone) onDone({ error: data.error }); }
-    else if (data.done) { finish(data.done, data.blob, name); if (onDone) onDone(data.done, data.blob); }
+    else if (data.done) {
+      data.done.memoria_python_mb = data.heapMB;
+      addLog(`Memória do Python no navegador: ${data.heapMB} MB (pico).`);
+      finish(data.done, data.blob, name);
+      if (onDone) onDone(data.done, data.blob);
+    }
   };
-  worker.postMessage({ files: list, handle, dumpDir });
+  // ?stream=N (só em localhost, para teste): lê em lotes as tabelas com mais de N folhas de 16 KB.
+  const stream = IS_LOCAL ? new URLSearchParams(location.search).get('stream') : null;
+  worker.postMessage({ files: list, handle, dumpDir, streamPages: stream === null ? undefined : Number(stream) });
   draw();
 }
 function setPhase(progress, text, label, percent, detail) {
@@ -747,7 +755,7 @@ import('./extract.js').then(m => m.cleanupLeftovers()).catch(() => {});
 // Teste automático de desenvolvimento (dev/dev_server.py, só em localhost): ?auto=1 pega a pasta data do servidor local;
 // ?auto=archive pega o .zip que ele serve em /archive. Confere se o arquivo montado tem o mesmo SHA-256 que o
 // Python calculou e devolve o resultado ao servidor.
-const AUTO = ['localhost', '127.0.0.1'].includes(location.hostname) ? new URLSearchParams(location.search).get('auto') : null;
+const AUTO = IS_LOCAL ? new URLSearchParams(location.search).get('auto') : null;
 if (AUTO) {
   (async () => {
     const finishTest = async (report, blob) => {
