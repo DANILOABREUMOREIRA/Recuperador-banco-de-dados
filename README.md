@@ -64,13 +64,32 @@ SHA-256).
 **258 MB** em lotes, mesmas 949.532 linhas. Em todas as tabelas de dois bancos reais, a leitura em lotes devolveu o mesmo
 conteúdo do `carve()`, exceto linhas que só existiam em páginas liberadas.
 
+### Medido com um banco real de 13,4 GB (Python do desktop, não o navegador)
+
+`ibdata1` de 13,4 GB, 248 tabelas, **22,6 milhões de linhas**, 4,4 GB de SQL: **pico de memória de 360 MB** (8 tabelas lidas em lotes; a maior,
+`estoque`, tem 6,7 milhões de linhas) e cerca de 36 minutos. Depois da varredura do `ibdata1` o processo usava só 53 MB.
+
 ### O que ainda precisa de medida para 20 GB
 
+- **O navegador com bancos grandes.** O experimento de 13 GB foi nativo. No navegador a memória do Python foi medida até 578 MB (pasta) e 210 MB
+  (`.zip`); WORKERFS com arquivo de dezenas de GB e OPFS com cota grande não foram testados (o painel de teste tem cota de 2 GB).
 - **Espaço em disco.** O `.zip` precisa do banco descompactado no disco do navegador, mais o dump (cerca de 0,55 vez o
   tamanho) fora do Chrome e do Edge.
-- **Tempo.** Cerca de 2 vezes o do desktop; por extrapolação, perto de 1h40 para 20 GB. Não medido.
-- **Memória das estruturas por página.** A varredura e a árvore guardam alguns dados por página (cerca de 100 bytes):
-  20 GB são 1,3 milhão de páginas. Não medido no navegador.
+- **Tempo no navegador.** Cerca de 2 vezes o do desktop nos bancos pequenos; para 20 GB seria perto de 1h30 a 2h. Não medido.
+
+### Validação com corrupção de propósito
+
+Numa **cópia** do banco de 13 GB foram aplicados 11 danos (folhas zeradas, páginas rasgadas, um nó interno da árvore, uma página do dicionário
+e quatro `.frm`), com a perda de cada um prevista antes de zerar. Resultado final: 241 tabelas idênticas ao original, 4 com a perda exata prevista,
+e a perda total de **9.703 de 22,6 milhões** de linhas (0,043%), todas explicadas (38 + 66 + 116 + 9.384 + 99). O experimento achou três defeitos,
+já corrigidos:
+
+1. **Uma página zerada da `SYS_TABLES` fazia 157 tabelas voltarem vazias.** `py/lost_tables.py` as acha de volta pelas colunas do `.frm`;
+   as que perderam o `.frm` também saem como `_sem_nome_<id>` (conferido por impressão digital: o conteúdo é idêntico ao original).
+2. **Dano silencioso:** uma tabela perdeu 99 linhas e o relatório dizia OK. Agora cada página é conferida (registros do cabeçalho × lidos,
+   estrutura da página) e o relatório avisa.
+3. **Escolha do banco por contagem de `.frm`:** um `.frm` apagado fez o banco irmão ser escolhido. Agora há aviso de "mais de um banco" e o
+   parâmetro `database`.
 
 ## O que faz
 
@@ -78,7 +97,8 @@ conteúdo do `carve()`, exceto linhas que só existiam em páginas liberadas.
   páginas do `ibdata1` ou dos `.ibd` (formatos COMPACT, REDUNDANT e DYNAMIC).
 - Aplica o doublewrite buffer: página rasgada é lida pela cópia íntegra.
 - Estrutura (`CREATE TABLE`) pelos `.frm` e pelo dicionário; tabelas com `.frm` mas sem linha no dicionário são
-  procuradas pelas páginas.
+  procuradas pelas páginas (e pelo que sobrou de `SYS_COLUMNS` e `SYS_INDEXES`; ver *Validação com corrupção de propósito*).
+- Avisa de páginas danificadas que não derrubam nada mas somem com registros, e quando a pasta tem mais de um banco.
 - Chaves estrangeiras (de `SYS_FOREIGN`), views e triggers (dos arquivos da pasta).
 - Relatório por tabela: registros, avisos de registros ilegíveis e de páginas perdidas, SHA-256 do dump.
 
@@ -97,8 +117,9 @@ Limitação do método: registros apagados há pouco tempo podem reaparecer (pá
 
 ## Limites conhecidos
 
-- Veja *O que ainda impede 20 GB*, acima: a memória por tabela é o limite de hoje.
-- Testado com `ibdata1` de 210 MB (pasta e `.zip`) e de 578 MB (pasta). Acima disso ainda não foi testado.
+- Veja *O que ainda precisa de medida para 20 GB*, acima.
+- No navegador, testado com `ibdata1` de 210 MB (pasta e `.zip`) e de 578 MB (pasta); 13 GB só no Python do desktop.
+- A recuperação leva **um banco** por vez; os outros da pasta não entram no dump (há aviso).
 - Cerca de 2 vezes mais lento que o Python do desktop.
 - O Pyodide vem de `cdn.jsdelivr.net`: precisa de internet para abrir o site.
 
@@ -122,6 +143,7 @@ worker.js             liga o Pyodide, monta os arquivos (WORKERFS) e grava o dum
 vendor/zip            zip.js 2.24.0 (BSD-3-Clause)
 py/web_driver.py      orquestra a leitura direta e monta o dump em pedaços
 py/stream_carver.py   lê tabelas grandes em lotes, pela árvore viva (novo; o resto de py/ é cópia do desktop)
+py/lost_tables.py     acha tabelas cuja linha em SYS_TABLES se perdeu (novo)
 py/innodb_carver.py   leitura das páginas do InnoDB          (cópia do desktop)
 py/page_health.py     checksum, página rasgada, doublewrite  (cópia do desktop)
 py/frm_parser.py      .frm, views e triggers                 (cópia do desktop)
@@ -130,6 +152,7 @@ py/mysql_codec.py     DECIMAL/DATE/TIME/DATETIME             (cópia do desktop)
 dev/dev_server.py     servidor local de teste
 dev/digest_run.py     roda a recuperação e guarda contagem e impressão digital do conteúdo de cada tabela
 dev/corromper.py      corrompe de propósito uma CÓPIA de uma pasta data e anota o resultado esperado
+dev/comparar.py       compara original e cópia corrompida, tabela por tabela, contra o plano de danos
 ```
 
 Os cinco módulos marcados como cópia vêm de `programa/sistema/` do programa de desktop, sem alteração. Ao mudar o

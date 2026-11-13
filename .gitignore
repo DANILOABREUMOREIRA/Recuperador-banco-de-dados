@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 *.sql
 dev/resultado_navegador.json
+estudo/

@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dictionary_rebuild
 import frm_parser
 from innodb_carver import CarverError, InnodbCarver, ddl_from_dictionary, rows_to_sql
+from lost_tables import recover_lost_tables
 from stream_carver import stream_table
 
 # Mesmos valores do programa de desktop (engine_common.py / engine_objects.py), para o dump sair igual.
@@ -44,8 +45,11 @@ STREAM_PAGES = int(os.environ.get("RECUPERADOR_STREAM_PAGES", 4096))
 class Recovery:
     """Uso: plan() -> cabeçalho; table(i) para cada tabela -> pedaço do dump; finish() -> rodapé; report() -> resumo."""
 
-    def __init__(self, data_dir, log=print, stream_pages=None):
+    def __init__(self, data_dir, log=print, stream_pages=None, database=None):
         self.data_dir, self.log = data_dir, log
+        self.database = database          # banco a recuperar; None = o com mais .frm
+        self.other_databases = []
+        self.restored = {}                # tabela -> como foi achada de volta (dicionário danificado)
         # Tabelas com mais folhas que isto são lidas em lotes (veja _is_big). RECUPERADOR_STREAM_PAGES troca o limite nos
         #   testes (0 = toda tabela em lotes).
         self.stream_pages = STREAM_PAGES if stream_pages is None else stream_pages
@@ -70,18 +74,26 @@ class Recovery:
         self.sql_bytes += len(data)
         return data
 
-    # FAZ: escolhe o banco do usuário com mais .frm (igual ao detect_database do desktop).
+    # FAZ: escolhe o banco a recuperar: o pedido em `database`, ou, sem pedido, o do usuário com mais .frm (igual ao
+    #   detect_database do desktop). Os outros bancos da pasta ficam em self.other_databases: o dump leva um banco só, e o
+    #   plano avisa. A contagem de .frm não é à prova de dano (um .frm apagado pode fazer um banco irmão passar na frente),
+    #   por isso o aviso e o parâmetro existem.
     def _detect_database(self):
-        best, count = None, 0
+        found = {}
         for entry in sorted(os.listdir(self.data_dir)):
             path = os.path.join(self.data_dir, entry)
             if entry.lower() in HIDDEN_SCHEMAS - {"test"} or not os.path.isdir(path):
                 continue
             frms = sum(1 for f in os.listdir(path) if f.lower().endswith(".frm"))
-            if frms > count:
-                best, count = entry, frms
-        if not best:
+            if frms:
+                found[entry] = frms
+        if not found:
             raise RuntimeError("Nenhum banco de usuário com arquivos .frm foi encontrado na pasta escolhida.")
+        wanted = next((name for name in found if self.database and name.lower() == self.database.lower()), None)
+        if self.database and not wanted:
+            raise RuntimeError(f"O banco {self.database} não existe na pasta (há: {', '.join(found)}).")
+        best = wanted or max(found, key=lambda name: found[name])
+        self.other_databases = [(name, count) for name, count in found.items() if name != best]
         return best
 
     def _view_files(self):
@@ -103,6 +115,9 @@ class Recovery:
         if not os.path.isfile(os.path.join(self.data_dir, "ibdata1")):
             raise RuntimeError("A pasta escolhida não tem o arquivo ibdata1.")
         self.db = self._detect_database()
+        if self.other_databases:
+            others = ", ".join(f"{name} ({count} tabelas)" for name, count in self.other_databases)
+            self.warn(f"Há mais de um banco na pasta. Foi recuperado {self.db}; não entraram no dump: {others}.")
         self.folder = os.path.join(self.data_dir, self.db)
         self.views = self._view_files()
         view_names = {v.lower() for v in self.views}
@@ -118,10 +133,12 @@ class Recovery:
         self.carver = InnodbCarver(os.path.join(self.data_dir, "ibdata1"), log=self.log, data_dir=self.data_dir).load()
         prefix = self.db.lower() + "/"
         known = {k[len(prefix):] for k in self.carver.tables if k.startswith(prefix)}
+        self._reconstruct_missing({t.lower() for t in tables} - known)
+        # Depois da reconstrução: as tabelas achadas de volta (inclusive as sem nome) já estão no dicionário do leitor.
+        known = {k[len(prefix):] for k in self.carver.tables if k.startswith(prefix)}
         dict_only = sorted(known - lowered)
         if dict_only:
             self.log(f"Tabelas sem .frm mas com dados no ibdata1 (lidas direto): {', '.join(dict_only)}")
-        self._reconstruct_missing({t.lower() for t in tables} - known)
         self.tables = [(t, False) for t in tables] + [(t, True) for t in dict_only]
         self.log(f"Banco {self.db}: {len(self.tables)} tabelas a extrair.")
         return self._emit(SQL_HEADER.format(db=self.db).encode("utf8"))
@@ -129,9 +146,18 @@ class Recovery:
     # FAZ: tabelas com .frm mas sem linha no dicionário: casa o .frm com as páginas (dictionary_rebuild). É
     #   redundância: uma falha aqui só gera aviso.
     def _reconstruct_missing(self, wanted):
-        if not wanted:
-            return
-        candidates = dictionary_rebuild.frm_candidates(self.data_dir, self.db, wanted=wanted)
+        candidates = dictionary_rebuild.frm_candidates(self.data_dir, self.db, wanted=wanted) if wanted else {}
+        # 1º: tabelas cuja linha só em SYS_TABLES se perdeu (SYS_COLUMNS e SYS_INDEXES continuam): casa pelas colunas do .frm.
+        #   Roda mesmo sem nenhum .frm legível: as que sobrarem saem sem nome, em vez de se perderem.
+        try:
+            found = recover_lost_tables(self.carver, self.db, {n: [c.name for c in t.columns] for n, t in candidates.items()}, log=self.log)
+        except Exception as e:     # redundância: nunca derruba a recuperação
+            found = {}
+            self.warn(f"Busca de tabelas pela SYS_COLUMNS falhou ({e}).")
+        for name, how in sorted(found.items()):
+            self.log(f"  {name}: {how}.")
+            self.restored[name] = how
+        candidates = {n: t for n, t in candidates.items() if n not in found}
         if not candidates:
             return
         self.log(f"{len(candidates)} tabela(s) têm .frm mas não constam no dicionário do ibdata1; procurando os dados.")
@@ -142,6 +168,7 @@ class Recovery:
             return
         for name, how in sorted(matched.items()):
             self.log(f"  {name}: dados encontrados pelas páginas ({how}).")
+            self.restored[name] = f"dados encontrados pelas páginas ({how})"
         for name, why in sorted(missed.items()):
             self.log(f"  {name}: dados não localizados ({why}).")
 
@@ -181,9 +208,12 @@ class Recovery:
         if not tdef:
             # Sem dados nas páginas: recria só a estrutura (se o .frm é legível), com aviso.
             if not hint:
+                # Se o dicionário perdeu a linha dela, os dados podem ter saído numa tabela sem nome (lost_tables).
+                spare = sorted(n for n in self.restored if n.startswith("_sem_nome_"))
+                where = f" Os dados podem estar em {', '.join(spare)}." if spare else ""
                 self.status[name] = {"rows": 0, "status": "NAO_LIDA",
-                                     "note": "Sem estrutura legível (.frm inválido e fora do dicionário); não recriada."}
-                self.warn(f"Tabela {name}: sem estrutura legível; ignorada.")
+                                     "note": "Sem estrutura legível (.frm inválido e fora do dicionário); não recriada." + where}
+                self.warn(f"Tabela {name}: sem estrutura legível; ignorada.{where}")
                 return
             self.no_fk[name.lower()] = name
             self.status[name] = {"rows": 0, "status": "AVISO",
@@ -203,9 +233,15 @@ class Recovery:
                     yield self._emit(rows_to_sql(name, columns, records) + b"\n")
                 if stats.get("bad_records"):
                     problem = f"{stats['bad_records']} registros ilegíveis descartados"
+                if stats.get("damaged_pages"):
+                    missing = f"; faltam ao menos {stats['records_missing']} registros" if stats["records_missing"] else ""
+                    problem = "; ".join(x for x in (problem, f"{stats['damaged_pages']} página(s) danificadas ({stats['damaged_examples'][0]}){missing}") if x)
                 lost = self.carver.lost_leaf_pages(full)
                 if lost:
                     problem = "; ".join(x for x in (problem, f"ao menos {len(lost)} página(s) da tabela perdida(s)") if x)
+                if stats.get("mode") == "cadeias":
+                    problem = "; ".join(x for x in (problem, f"árvore danificada ({stats.get('reason')}): lida pelas cadeias de folhas, "
+                                                              "pode incluir registros de páginas antigas") if x)
             except (CarverError, OSError) as e:
                 problem = f"leitura direta falhou: {e}"
             info = f"tabela grande, lida em lotes pela cadeia de folhas ({stats.get('leaf_pages', 0):,} páginas)".replace(",", ".")
@@ -219,6 +255,9 @@ class Recovery:
                 data, rows = rows_to_sql(name, columns, records), len(records)
                 if stats["bad_records"]:
                     problem = f"{stats['bad_records']} registros ilegíveis descartados"
+                health = self.carver.tree_health(full)
+                if health and health["ruins"]:
+                    problem = "; ".join(x for x in (problem, f"{health['ruins']} folha(s) com a estrutura danificada") if x)
                 lost = self.carver.lost_leaf_pages(full)
                 if lost:
                     problem = "; ".join(x for x in (problem, f"ao menos {len(lost)} página(s) da tabela perdida(s)") if x)
@@ -228,6 +267,7 @@ class Recovery:
         if problem:
             self.warn(f"Tabela {name}: {problem}")
         self.no_fk[name.lower()] = name
+        info = "; ".join(x for x in (self.restored.get(name), info) if x)
         self.status[name] = {"rows": rows, "status": "AVISO" if problem else "OK", "note": "; ".join(x for x in (problem, info) if x)}
 
     def info(self, index):

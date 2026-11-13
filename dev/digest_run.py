@@ -5,7 +5,7 @@ CONTEÚDO, sem gravar o dump: serve para comparar o original com uma cópia corr
 A impressão é a soma (módulo 2^64) de um hash de cada linha: não depende da ordem das linhas nem de como o dump foi
 cortado em INSERTs. O dump gerado é byte a byte o de sempre (a função de saída é a mesma, só que também soma o hash).
 
-Uso: python digest_run.py <pasta data> <saida.json> [limite de folhas para ler em lotes]
+Uso: python digest_run.py <pasta data> <saida.json> [limite de folhas para ler em lotes] [banco]
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -63,7 +63,8 @@ def memory_mb():
 if __name__ == "__main__":
     folder, target = sys.argv[1], sys.argv[2]
     limit = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else None
-    recovery = web_driver.Recovery(folder, log=lambda message: print("  log:", message[:200], flush=True), stream_pages=limit)
+    database = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
+    recovery = web_driver.Recovery(folder, log=lambda message: print("  log:", message[:200], flush=True), stream_pages=limit, database=database)
     started = time.time()
     recovery.plan()
     print(f"plano: {len(recovery.tables)} tabelas do banco {recovery.db} em {time.time() - started:.0f} s, memória {memory_mb()[0]:.0f} MB", flush=True)

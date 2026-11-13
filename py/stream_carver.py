@@ -18,8 +18,8 @@ páginas liberadas.
 """
 import struct
 
-from innodb_carver import (FIL_NULL, FIL_PAGE_NEXT, FIL_PAGE_PREV, PAGE_INDEX_ID, PAGE_LEVEL, CarverError,
-                           decode_value, iter_records, u16, u32, u64)
+from innodb_carver import (FIL_NULL, FIL_PAGE_NEXT, FIL_PAGE_PREV, PAGE_INDEX_ID, PAGE_LEVEL, PAGE_N_RECS, CarverError,
+                           decode_value, iter_records, page_structure_error, u16, u32, u64)
 from page_health import FIL_PAGE_INDEX, FIL_PAGE_OFFSET, FIL_PAGE_TYPE, PAGE_SIZE
 
 BATCH_ROWS = 4000            # linhas por lote, no máximo
@@ -161,7 +161,8 @@ def stream_table(carver, name, ddl_hint=None, progress=None, stats=None):
     leaves = ts.leaf_pages.get(index_id, [])
     order, info = live_leaves(carver, ts, table, index_id, fields[:n_key], set(leaves))
     stats = stats if stats is not None else {}
-    stats.update(pages=0, bad_records=0, deleted=0, leaf_pages=len(leaves), missing_leaves=0)
+    stats.update(pages=0, bad_records=0, deleted=0, leaf_pages=len(leaves), missing_leaves=0,
+                 damaged_pages=0, records_missing=0, damaged_examples=[])
     if order is None:
         stats.update(mode="cadeias", reason=info)
         order = leaf_runs(ts, leaves)
@@ -179,7 +180,9 @@ def stream_table(carver, name, ddl_hint=None, progress=None, stats=None):
             progress(stats["pages"], total)
         page = ts.page(page_no)
         stats["pages"] += 1
+        seen = 0
         for origin in iter_records(page, table.compact):
+            seen += 1
             try:
                 parsed = parser(page, origin, fields, external)
                 if parsed is None:
@@ -194,6 +197,14 @@ def stream_table(carver, name, ddl_hint=None, progress=None, stats=None):
                 continue
             batch.append(values)
             size += 16 * len(values) + sum(len(v) for v in values if isinstance(v, (bytes, str)))
+        # Dano que não derruba nada mas some com registros: a estrutura da página não confere (gravação interrompida,
+        #   sentinelas ou diretório destruídos) ou o cabeçalho diz que há mais registros do que a lista encadeada entrega.
+        declared, error = u16(page, PAGE_N_RECS), page_structure_error(page, table.compact)
+        if error or declared != seen:
+            stats["damaged_pages"] += 1
+            stats["records_missing"] += max(0, declared - seen)
+            if len(stats["damaged_examples"]) < 3:
+                stats["damaged_examples"].append(f"página {page_no}: " + (error or f"o cabeçalho diz {declared} registros e só {seen} foram lidos"))
         if len(batch) >= BATCH_ROWS or size >= BATCH_BYTES:
             names, rows = carver._in_column_order(table, fields, out_index, batch)
             batch, size = [], 0

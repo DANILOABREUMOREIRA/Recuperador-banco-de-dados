@@ -112,7 +112,8 @@ def hint_of(name):
 
 
 def live_pages(entry):
-    leaves, name, table, ts, index_id = entry
+    _count, name, table, ts, index_id = entry
+    leaves = ts.leaf_pages.get(index_id, [])
     fields, n_key, _p, _o = carver._fields_and_parser(table, hint_of(name))
     order, _ = live_leaves(carver, ts, table, index_id, fields[:n_key], set(leaves))
     return [p for p in (order or leaves) if p not in protected]
@@ -154,7 +155,7 @@ if len(big) > 1:
 # C. tabela grande: um nó interno zerado (a árvore perde um pedaço do caminho)
 if len(big) > 2:
     entry = big[2]
-    leaves, name, table, ts, index_id = entry
+    _count, name, table, ts, index_id = entry
     fields, n_key, _p, _o = carver._fields_and_parser(table, hint_of(name))
     root = table.root_page
     page_no, level = root, u16(ts.page(root), PAGE_LEVEL)
