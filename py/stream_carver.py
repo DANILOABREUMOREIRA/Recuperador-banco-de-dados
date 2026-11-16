@@ -18,6 +18,7 @@ páginas liberadas.
 """
 import struct
 
+import page_health
 from innodb_carver import (FIL_NULL, FIL_PAGE_NEXT, FIL_PAGE_PREV, PAGE_INDEX_ID, PAGE_LEVEL, PAGE_N_RECS, CarverError,
                            decode_value, iter_records, page_structure_error, u16, u32, u64)
 from page_health import FIL_PAGE_INDEX, FIL_PAGE_OFFSET, FIL_PAGE_TYPE, PAGE_SIZE
@@ -143,7 +144,12 @@ def leaf_runs(ts, leaves):
             run.append(here)
             here = follow.get(here)
         runs.append(run)
-    kept = [run for run in runs if len(run) >= 2] or runs
+    # Folha sozinha só entra se os vizinhos que ela cita foram zerados: era da cadeia viva e perdeu os vizinhos (uma folha
+    #   liberada de verdade cita vizinhos que continuam vivos). shortcut: vizinho zerado depois de liberada traz linhas velhas.
+    def orphaned(run):
+        ends = [n for n in (links[run[0]][0], links[run[-1]][1]) if n != FIL_NULL]
+        return bool(ends) and all(n < ts.n_pages and page_health.is_blank(ts.page(n)) for n in ends)
+    kept = [run for run in runs if len(run) >= 2 or orphaned(run)] or runs
     return [page_no for run in kept for page_no in run]
 
 

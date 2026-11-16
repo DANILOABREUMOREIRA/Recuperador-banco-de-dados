@@ -25,6 +25,8 @@ import os
 import struct
 import time
 
+from bigfile import open_rb
+
 # PAGE_SIZE e as posições FIL_PAGE_*: o InnoDB 5.5 usa páginas de 16.384 bytes. Cada constante FIL_PAGE_X é a POSIÇÃO
 #   (em bytes, a partir do começo da página) de um campo do cabeçalho: checksum (0), número da página (4), LSN (16),
 #   tipo (24), id do espaço (34)... FIL_PAGE_INDEX = 17855 = 'página de índice'.
@@ -191,7 +193,7 @@ def scan_health(path, structure_check=None, sample_budget_s=CHECKSUM_SAMPLE_BUDG
     deadline = started + sample_budget_s * 2
     # Passo 3: abre o arquivo e descobre quais páginas pertencem ao doublewrite (para não confundi-las com páginas
     #   normais).
-    with open(path, "rb") as f:
+    with open_rb(path) as f:
         dblwr = doublewrite_page_numbers(f, n_pages)
         f.seek(0)
         # Passo 4: lê uma página por vez.
@@ -288,7 +290,7 @@ def doublewrite_copies(path):
     found = {}
     try:
         n_pages = os.path.getsize(path) // PAGE_SIZE
-        with open(path, "rb") as f:
+        with open_rb(path) as f:
             # Passo 2: lê cada página do doublewrite, descarta as em branco, rasgadas ou com checksum ruim.
             for slot in doublewrite_slots(f, n_pages):
                 f.seek(slot * PAGE_SIZE)
@@ -319,7 +321,7 @@ def torn_page_repairs(path, space_id, copies):
         return repairs
     # Passo 2: para cada cópia, lê a página atual do arquivo; se está ruim (problema rápido ou checksum errado), a
     #   cópia vira a correção.
-    with open(path, "rb") as f:
+    with open_rb(path) as f:
         n_pages = os.path.getsize(path) // PAGE_SIZE
         for page_no, copy in sorted(wanted.items()):
             if page_no >= n_pages:

@@ -42,6 +42,52 @@ OBJECT_HEADER = "-- Objetos do banco (views, triggers, rotinas e eventos)\n"
 STREAM_PAGES = int(os.environ.get("RECUPERADOR_STREAM_PAGES", 4096))
 
 
+UNNAMED_DB = "_sem_banco"   # tabelas achadas pelo dicionário sem .frm: o banco de origem é desconhecido
+
+
+def list_databases(data_dir):
+    """{banco: quantidade de .frm} dos bancos de usuário da pasta data (sem mysql, performance_schema, information_schema)."""
+    found = {}
+    for entry in sorted(os.listdir(data_dir)):
+        path = os.path.join(data_dir, entry)
+        if entry.lower() in HIDDEN_SCHEMAS - {"test"} or not os.path.isdir(path):
+            continue
+        frms = sum(1 for f in os.listdir(path) if f.lower().endswith(".frm"))
+        if frms:
+            found[entry] = frms
+    return found
+
+
+def prepare_all(data_dir, log=print):
+    """Para recuperar VÁRIOS bancos da mesma pasta: abre o ibdata1 uma vez (a varredura é a parte cara) e roda a busca de
+    tabelas perdidas olhando todos os bancos juntos (uma tabela sem nome só pode ser casada com um .frm de qualquer banco).
+    Devolve (leitor, achadas {"banco/tabela": como}, [bancos a recuperar]); as tabelas sem banco ficam em UNNAMED_DB."""
+    databases = sorted(list_databases(data_dir))
+    carver = InnodbCarver(os.path.join(data_dir, "ibdata1"), log=log, data_dir=data_dir).load()
+    frm_columns = {}
+    for db in databases:
+        known = {k.split("/", 1)[1] for k in carver.tables if k.startswith(db.lower() + "/")}
+        names = {f[:-4].lower() for f in os.listdir(os.path.join(data_dir, db)) if f.lower().endswith(".frm")}
+        wanted = {n for n in names if n not in known}
+        if wanted:
+            for name, table in dictionary_rebuild.frm_candidates(data_dir, db, wanted=wanted).items():
+                frm_columns[f"{db}/{name}"] = [c.name for c in table.columns]
+    try:
+        found = recover_lost_tables(carver, frm_columns, log=log, unnamed_db=UNNAMED_DB)
+    except Exception as e:   # redundância: nunca derruba a recuperação
+        found = {}
+        log(f"AVISO: busca de tabelas perdidas falhou ({e}).")
+    if any(k.startswith(UNNAMED_DB + "/") for k in carver.tables):
+        databases.append(UNNAMED_DB)
+    return carver, found, databases
+
+
+def recovery_for(data_dir, db, carver, found, log=print, stream_pages=None):
+    """Recovery do banco `db` usando o leitor e as tabelas achadas de prepare_all()."""
+    restored = {full.split("/", 1)[1]: how for full, how in found.items() if full.startswith(db + "/")}
+    return Recovery(data_dir, log=log, stream_pages=stream_pages, database=db, carver=carver, restored=restored)
+
+
 class Recovery:
     """Uso: plan() -> cabeçalho; table(i) para cada tabela -> pedaço do dump; finish() -> rodapé; report() -> resumo."""
 
@@ -82,21 +128,17 @@ class Recovery:
     #   plano avisa. A contagem de .frm não é à prova de dano (um .frm apagado pode fazer um banco irmão passar na frente),
     #   por isso o aviso e o parâmetro existem.
     def _detect_database(self):
-        found = {}
-        for entry in sorted(os.listdir(self.data_dir)):
-            path = os.path.join(self.data_dir, entry)
-            if entry.lower() in HIDDEN_SCHEMAS - {"test"} or not os.path.isdir(path):
-                continue
-            frms = sum(1 for f in os.listdir(path) if f.lower().endswith(".frm"))
-            if frms:
-                found[entry] = frms
+        if self.database == UNNAMED_DB:
+            return UNNAMED_DB
+        found = list_databases(self.data_dir)
         if not found:
             raise RuntimeError("Nenhum banco de usuário com arquivos .frm foi encontrado na pasta escolhida.")
         wanted = next((name for name in found if self.database and name.lower() == self.database.lower()), None)
         if self.database and not wanted:
             raise RuntimeError(f"O banco {self.database} não existe na pasta (há: {', '.join(found)}).")
         best = wanted or max(found, key=lambda name: found[name])
-        self.other_databases = [(name, count) for name, count in found.items() if name != best]
+        # Com o leitor compartilhado todos os bancos da pasta são recuperados, cada um no seu Recovery: não há "outros".
+        self.other_databases = [] if self.shared_carver else [(name, count) for name, count in found.items() if name != best]
         return best
 
     def _view_files(self):
@@ -121,11 +163,12 @@ class Recovery:
         if self.other_databases:
             others = ", ".join(f"{name} ({count} tabelas)" for name, count in self.other_databases)
             self.warn(f"Há mais de um banco na pasta. Foi recuperado {self.db}; não entraram no dump: {others}.")
-        self.folder = os.path.join(self.data_dir, self.db)
-        self.views = self._view_files()
+        unnamed = self.db == UNNAMED_DB   # sem pasta: só o que o dicionário trouxe
+        self.folder = None if unnamed else os.path.join(self.data_dir, self.db)
+        self.views = {} if unnamed else self._view_files()
         view_names = {v.lower() for v in self.views}
-        listed = sorted(f[:-4] for f in os.listdir(self.folder)
-                        if f.lower().endswith(".frm") and not f.startswith("#sql") and f[:-4].lower() not in view_names)
+        listed = [] if unnamed else sorted(f[:-4] for f in os.listdir(self.folder)
+                                           if f.lower().endswith(".frm") and not f.startswith("#sql") and f[:-4].lower() not in view_names)
         lowered = {t.lower() for t in listed}
         tables = [t for t in listed if not (VARIANT_SUFFIX.search(t) and VARIANT_SUFFIX.sub("", t).lower() in lowered)]
         skipped = sorted(set(listed) - set(tables))
@@ -318,7 +361,7 @@ class Recovery:
             except frm_parser.FrmError as e:
                 self.warn(f"View {name}: arquivo ilegível ({e}); não foi recriada.")
         triggers = []
-        for entry in sorted(os.listdir(self.folder)):
+        for entry in sorted(os.listdir(self.folder)) if self.folder else []:
             if entry.upper().endswith(".TRG"):
                 try:
                     with open(os.path.join(self.folder, entry), "r", encoding="utf8", errors="replace") as f:

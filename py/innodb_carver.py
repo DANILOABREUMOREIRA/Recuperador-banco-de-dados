@@ -40,6 +40,7 @@ import re
 import struct
 
 import page_health
+from bigfile import open_rb
 from mysql_codec import decode_newdecimal, format_date, format_datetime, format_time
 from page_health import FIL_PAGE_INDEX, FIL_PAGE_LSN, FIL_PAGE_OFFSET, FIL_PAGE_SPACE_ID, FIL_PAGE_TYPE, PAGE_SIZE
 
@@ -275,7 +276,7 @@ class Tablespace:
     #   overlay (páginas refeitas em memória).
     def __init__(self, path, space_id=None):
         self.path = path
-        self.f = open(path, "rb")
+        self.f = open_rb(path)
         self.n_pages = os.path.getsize(path) // PAGE_SIZE
         self.space_id = space_id if space_id is not None else self._read_space_id()
         self.leaf_pages = {}    # index_id -> [page_no] (folhas, nível 0)

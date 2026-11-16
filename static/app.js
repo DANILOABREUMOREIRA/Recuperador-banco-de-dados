@@ -220,13 +220,16 @@ function refreshButtons() {
   // Baixar só vale quando o navegador guardou o dump na memória; no outro caso o .sql já está no disco.
   // Pronta a recuperação, o Recuperar some: o Baixar .sql ocupa o lugar dele e o Baixar .zip fica à direita.
   $('btnRun').hidden = done;
-  $('btnZip').hidden = !done;
+  // Com vários bancos o resultado já é um .zip (um .sql por banco): não há .sql avulso nem segundo .zip.
+  const multi = done && !!last.multi;
+  $('btnZip').hidden = !done || multi;
   $('btnGet').disabled = !(done && last.blob);
-  $('btnGet').textContent = done && last.mode === 'disk' ? 'Salvo no disco' : 'Baixar .sql';
+  $('btnGet').textContent = done && last.mode === 'disk' ? 'Salvo no disco' : multi ? 'Baixar .zip' : 'Baixar .sql';
   $('dlSql').disabled = !(done && last.blob);
+  $('dlSqlName').textContent = multi ? 'Dumps SQL de todos os bancos (.zip)' : 'Dump SQL';
   $('dlSqlInfo').textContent = done && last.mode === 'disk' ? 'Gravado direto no disco: ' + last.savedName : '';
   $('dlReport').disabled = !(done && last.report);
-  const zipOk = done && !!(last.blob || last.handle) && !zipWorker;
+  const zipOk = done && !multi && !!(last.blob || last.handle) && !zipWorker;
   $('btnZip').disabled = !zipOk;
   $('dlZip').disabled = !zipOk;
 }
@@ -238,13 +241,37 @@ function setRunLabel() {
 const fileSafe = name => name.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '') || 'banco_recuperado';
 
 // FAZ: o clique em Recuperar. No Chrome e no Edge pergunta primeiro onde salvar o .sql (precisa ser logo no clique).
+// Os bancos de usuário de uma lista de caminhos: a pasta pai de cada .frm (fora os bancos do sistema). Igual ao Python.
+const SYSTEM_DBS = new Set(['mysql', 'performance_schema', 'information_schema']);
+function databasesIn(paths) {
+  const found = new Set();
+  for (const path of paths) {
+    const m = /(?:^|\/)([^/]+)\/[^/]+\.frm$/i.exec(path);
+    if (m && !SYSTEM_DBS.has(m[1].toLowerCase())) found.add(m[1]);
+  }
+  return found;
+}
+// Quantos bancos a recuperação vai ter (vários bancos saem num .zip, um só sai num .sql). No .zip lê só o índice dele.
+async function countDatabases() {
+  if (picked.kind !== 'archive') return databasesIn(picked.files.map(f => f.name)).size;
+  try {
+    const zip = await import('../vendor/zip/zip.min.js');
+    zip.configure({ useWebWorkers: false });
+    const reader = new zip.ZipReader(new zip.BlobReader(picked.file));
+    const entries = await reader.getEntries();
+    await reader.close();
+    return databasesIn(entries.map(e => e.filename)).size;
+  } catch (e) { return 1; }
+}
 async function startRecovery() {
   if (running() || !picked || !projectName) return;
   let handle = null;
+  const many = (await countDatabases()) > 1;
   if (CAN_STREAM) {
     try {
-      handle = await window.showSaveFilePicker({ suggestedName: fileSafe(projectName) + '.sql',
-        types: [{ description: 'Dump SQL', accept: { 'application/sql': ['.sql'] } }] });
+      handle = await window.showSaveFilePicker(many
+        ? { suggestedName: fileSafe(projectName) + '.zip', types: [{ description: 'Arquivo ZIP', accept: { 'application/zip': ['.zip'] } }] }
+        : { suggestedName: fileSafe(projectName) + '.sql', types: [{ description: 'Dump SQL', accept: { 'application/sql': ['.sql'] } }] });
     } catch (error) {
       if (error.name !== 'AbortError') note('Não foi possível escolher o local do arquivo: ' + error.message, true);
       return;
@@ -420,11 +447,12 @@ function finish(report, blob, name) {
   last.progress = 100;
   last.elapsed_s = Math.round(report.segundos);
   last.report = report;
+  last.multi = !!report.bancos;
   last.blob = blob;
   last.task = null; last.item = null;
   last.step_description = 'Recuperação concluída.';
   addLog(`Concluída em ${report.segundos} s: ${Object.keys(report.tabelas).length} tabelas, ${report.registros.toLocaleString('pt-BR')} registros, ` +
-    `${fmtSize(report.sql_bytes)}. SHA-256 ${report.sha256}`);
+    `${fmtSize(report.sql_bytes)}.` + (report.sha256 ? ` SHA-256 ${report.sha256}` : ` Bancos: ${report.banco}.`));
   saveHistory(name, report);
   draw();
   const warned = Object.values(report.tabelas).some(t => t.status !== 'OK');
@@ -460,6 +488,18 @@ function addLog(text) {
 function askNotifyPermission() {
   try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { /* sem notificações */ }
 }
+function chime() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [880, 1175].forEach((freq, k) => {
+      const osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.frequency.value = freq; osc.connect(gain); gain.connect(ctx.destination);
+      const t = ctx.currentTime + k * 0.18;
+      gain.gain.setValueAtTime(0.0001, t); gain.gain.exponentialRampToValueAtTime(0.15, t + 0.02); gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      osc.start(t); osc.stop(t + 0.32);
+    });
+  } catch (e) { /* sem som */ }
+}
 function notify(title, body, isErr) {
   const box = $('toasts');
   const toast = document.createElement('div');
@@ -470,14 +510,32 @@ function notify(title, body, isErr) {
   const strong = document.createElement('strong'); strong.textContent = title;
   const span = document.createElement('span'); span.textContent = body;
   text.append(strong, span);
+  const hidden = document.hidden || !document.hasFocus();
+  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  if (hidden && perm !== 'granted') {
+    const hint = document.createElement('span');
+    hint.textContent = perm === 'denied' ? 'O navegador bloqueou as notificações deste site (cadeado ao lado do endereço > Notificações > Permitir).' : 'Notificações do sistema desligadas neste navegador.';
+    text.append(hint);
+  }
   toast.append(icon, text);
-  const close = () => toast.remove();
+  const baseTitle = document.title;
+  const close = () => { toast.remove(); document.title = baseTitle; };
   toast.addEventListener('click', close);
   box.append(toast);
-  setTimeout(close, 15000);
+  chime();
+  if (hidden) {
+    // Quem está em outra aba ou janela não vê o aviso: ele espera a pessoa voltar, e a aba mostra o recado no título.
+    document.title = '✔ ' + title;
+    const back = () => {
+      if (document.hidden || !document.hasFocus()) return;
+      window.removeEventListener('focus', back); document.removeEventListener('visibilitychange', back);
+      document.title = baseTitle; setTimeout(close, 8000);
+    };
+    window.addEventListener('focus', back); document.addEventListener('visibilitychange', back);
+  } else setTimeout(close, 15000);
   try {
-    if ('Notification' in window && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) {
-      const system = new Notification(title, { body, icon: 'static/icone.png', tag: 'recuperador' });
+    if (perm === 'granted' && hidden) {
+      const system = new Notification(title, { body, icon: 'static/icone.png', tag: 'recuperador', requireInteraction: true });
       system.onclick = () => { window.focus(); system.close(); };
     }
   } catch (e) { /* o aviso da página já foi mostrado */ }
@@ -493,7 +551,7 @@ function saveBlob(blob, name) {
   setTimeout(() => URL.revokeObjectURL(link.href), 60000);
 }
 function download(type) {
-  if (type === 'sql' && last.blob) saveBlob(last.blob, fileSafe(last.projectName) + '.sql');
+  if (type === 'sql' && last.blob) saveBlob(last.blob, fileSafe(last.projectName) + (last.multi ? '.zip' : '.sql'));
   else if (type === 'report' && last.report) openReportOf(last.report, last.projectName);
 }
 function openReport() { download('report'); }

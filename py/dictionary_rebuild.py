@@ -444,6 +444,7 @@ def reconstruct(carver, candidates, db_name, log=None):
         lsn, index_id, score, table, orphan = options[0]
         table.clustered_index_id, table.space_id = index_id, 0
         carver.register_table(table.name, table)
+        carver.index_ids.add(index_id)   # já tem dono: outro banco da pasta (mesmo esquema) não pode levar os mesmos dados
         matched[name] = (f"índice {index_id} do ibdata1 ({orphan['folhas']} folhas, {orphan['registros']} registros; "
                          f"{score / 2:.0%} de afinidade com o .frm)")   # score = plausível + geometria (0 a 2)
         if len(options) > 1:
