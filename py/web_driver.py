@@ -45,11 +45,14 @@ STREAM_PAGES = int(os.environ.get("RECUPERADOR_STREAM_PAGES", 4096))
 class Recovery:
     """Uso: plan() -> cabeçalho; table(i) para cada tabela -> pedaço do dump; finish() -> rodapé; report() -> resumo."""
 
-    def __init__(self, data_dir, log=print, stream_pages=None, database=None):
+    def __init__(self, data_dir, log=print, stream_pages=None, database=None, carver=None, restored=None):
         self.data_dir, self.log = data_dir, log
+        # carver: leitor já carregado (a varredura do ibdata1 é a parte cara; vários bancos da mesma pasta a reaproveitam).
+        # restored: o que a busca de tabelas perdidas (lost_tables) já achou, quando ela rodou antes, para todos os bancos.
+        self.shared_carver, self.lost_done = carver, restored is not None
         self.database = database          # banco a recuperar; None = o com mais .frm
         self.other_databases = []
-        self.restored = {}                # tabela -> como foi achada de volta (dicionário danificado)
+        self.restored = dict(restored or {})   # tabela -> como foi achada de volta (dicionário danificado)
         # Tabelas com mais folhas que isto são lidas em lotes (veja _is_big). RECUPERADOR_STREAM_PAGES troca o limite nos
         #   testes (0 = toda tabela em lotes).
         self.stream_pages = STREAM_PAGES if stream_pages is None else stream_pages
@@ -130,7 +133,7 @@ class Recovery:
             self.log(f"Cópias de chkdsk ignoradas ({len(skipped)}): {', '.join(skipped)}")
 
         # Sem o dicionário do ibdata1 não há como achar os dados: o erro sobe com a mensagem do leitor de páginas.
-        self.carver = InnodbCarver(os.path.join(self.data_dir, "ibdata1"), log=self.log, data_dir=self.data_dir).load()
+        self.carver = self.shared_carver or InnodbCarver(os.path.join(self.data_dir, "ibdata1"), log=self.log, data_dir=self.data_dir).load()
         prefix = self.db.lower() + "/"
         known = {k[len(prefix):] for k in self.carver.tables if k.startswith(prefix)}
         self._reconstruct_missing({t.lower() for t in tables} - known)
@@ -149,15 +152,18 @@ class Recovery:
         candidates = dictionary_rebuild.frm_candidates(self.data_dir, self.db, wanted=wanted) if wanted else {}
         # 1º: tabelas cuja linha só em SYS_TABLES se perdeu (SYS_COLUMNS e SYS_INDEXES continuam): casa pelas colunas do .frm.
         #   Roda mesmo sem nenhum .frm legível: as que sobrarem saem sem nome, em vez de se perderem.
-        try:
-            found = recover_lost_tables(self.carver, self.db, {n: [c.name for c in t.columns] for n, t in candidates.items()}, log=self.log)
-        except Exception as e:     # redundância: nunca derruba a recuperação
-            found = {}
-            self.warn(f"Busca de tabelas pela SYS_COLUMNS falhou ({e}).")
-        for name, how in sorted(found.items()):
+        found = {}
+        if not self.lost_done:
+            try:
+                found = recover_lost_tables(self.carver, {f"{self.db}/{n}": [c.name for c in t.columns] for n, t in candidates.items()},
+                                            log=self.log, unnamed_db=self.db)
+            except Exception as e:     # redundância: nunca derruba a recuperação
+                self.warn(f"Busca de tabelas pela SYS_COLUMNS falhou ({e}).")
+        for full, how in sorted(found.items()):
+            name = full.split("/", 1)[1]
             self.log(f"  {name}: {how}.")
             self.restored[name] = how
-        candidates = {n: t for n, t in candidates.items() if n not in found}
+        candidates = {n: t for n, t in candidates.items() if n not in self.restored}
         if not candidates:
             return
         self.log(f"{len(candidates)} tabela(s) têm .frm mas não constam no dicionário do ibdata1; procurando os dados.")
@@ -224,6 +230,7 @@ class Recovery:
 
         ddl = ddl_from_dictionary(tdef, hint)
         rows, problem, info = 0, None, ""
+        blobs_before = getattr(self.carver, "external_damaged", 0)
         if self._is_big(tdef):
             yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8"))
             stats = {}
@@ -264,6 +271,9 @@ class Recovery:
             except (CarverError, OSError) as e:
                 problem = f"leitura direta falhou: {e}"
             yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8") + data + b"\n\n")
+        cut = getattr(self.carver, "external_damaged", 0) - blobs_before
+        if cut:
+            problem = "; ".join(x for x in (problem, f"{cut} valor(es) longo(s) (text/blob) incompleto(s): páginas de BLOB danificadas") if x)
         if problem:
             self.warn(f"Tabela {name}: {problem}")
         self.no_fk[name.lower()] = name
@@ -356,7 +366,8 @@ class Recovery:
         tail = self._foreign_keys() + self._objects()
         self.repaired = len(self.carver.repaired_pages)
         self.bad_pages = self.carver.space.bad_pages
-        self.carver.close()
+        if not self.shared_carver:   # um carver emprestado (vários bancos na pasta) é fechado por quem o abriu
+            self.carver.close()
         return self._emit(tail)
 
     def report(self):
@@ -371,7 +382,7 @@ class Recovery:
 
 
 if __name__ == "__main__":
-    recovery = Recovery(sys.argv[1])
+    recovery = Recovery(sys.argv[1], database=sys.argv[4] if len(sys.argv) > 4 else None)
     with open(sys.argv[2], "wb") as out:
         out.write(recovery.plan())
         for number in range(len(recovery.tables)):

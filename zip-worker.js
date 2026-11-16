@@ -48,10 +48,21 @@ onmessage = async ({ data }) => {
 
     // Espaço no disco do navegador: o banco descompactado e, sem arquivo de destino, o dump que vem depois.
     const need = chosen.size * (1.02 + (reserveRatio || 0));
-    const room = await navigator.storage.estimate();
+    let room = await navigator.storage.estimate();
     if (room.quota && room.quota - room.usage < need) {
-      throw new Error(`Falta espaço no navegador: a recuperação precisa de cerca de ${size(need)} e há ${size(room.quota - room.usage)} livres. ` +
-        'Libere espaço no disco ou extraia o .zip e escolha a pasta data.');
+      // Sobras de recuperações anteriores (fechadas ou com erro há menos de 1 hora) ocupam a cota: apaga as pastas rm-* e confere de novo.
+      try {
+        const top = await navigator.storage.getDirectory();
+        for await (const [name] of top.entries()) {
+          // só as de execuções anteriores (a pasta do dump desta execução nasce junto com a do .zip)
+          if (name.startsWith('rm-') && parseInt(name.slice(3), 10) < parseInt(dir.slice(3), 10) - 5000) await top.removeEntry(name, { recursive: true });
+        }
+      } catch (e) { /* sem como limpar: segue com a conta que há */ }
+      room = await navigator.storage.estimate();
+    }
+    if (room.quota && room.quota - room.usage < need) {
+      throw new Error(`Falta espaço no navegador: a recuperação precisa de cerca de ${size(need)} e há ${size(room.quota - room.usage)} livres ` +
+        `(cota de ${size(room.quota)}, ${size(room.usage)} em uso). Feche as janelas anônimas, libere espaço no disco ou extraia o .zip e escolha a pasta data.`);
     }
     const root = await (await navigator.storage.getDirectory()).getDirectoryHandle(dir, { create: true });
 

@@ -661,9 +661,10 @@ class InnodbCarver:
             index_fields.setdefault(r["INDEX_ID"], []).append((pos, r["COL_NAME"]))
         # Passo 4: o índice clusterizado de cada tabela: id, página raiz e colunas da chave primária (ou chave oculta
         #   GEN_CLUST_INDEX).
+        ids_of_table = {}
         for r in sys_rows["SYS_INDEXES"]:
             if r["ID"] is not None:
-                self.index_ids.add(r["ID"])
+                ids_of_table.setdefault(r["TABLE_ID"], []).append(r["ID"])
             table = by_id.get(r["TABLE_ID"])
             if not table or not (r["TYPE"] or 0) & DICT_CLUSTERED:
                 continue
@@ -681,6 +682,9 @@ class InnodbCarver:
                 continue
             self.tables[table.name.lower()] = table
             self.tables.setdefault(table.name.split("/")[-1].lower(), table)
+            self.index_ids.update(ids_of_table.get(table.id, []))
+        # Índice cuja tabela ficou sem nome, colunas ou chave (linha de SYS_TABLES/SYS_COLUMNS/SYS_FIELDS perdida) NÃO é
+        #   'conhecido': continua sem dono, e a reconstrução pelo .frm pode devolver os dados dele.
 
     # FAZ: devolve a TableDef de uma tabela pelo nome ('banco/tabela' ou só 'tabela'), carregando o dicionário se
     #   preciso; None se não existe.
@@ -793,7 +797,17 @@ class InnodbCarver:
         for _ in range(100000):
             if page_no in (FIL_NULL, 0) or total >= ext_len:
                 break
-            page = ts.page(page_no)
+            # A página tem de ser mesmo a pedida e não pode ser zerada nem de índice (bancos antigos gravam o tipo de BLOB
+            #   de outro jeito, por isso não exige o tipo 10); fora do arquivo, zerada ou trocada, o valor sai incompleto e
+            #   isso é contado (o web_driver avisa), em vez de entregar texto cortado como se fosse o certo.
+            try:
+                page = ts.page(page_no)
+            except CarverError:
+                page = None
+            if page is None or u16(page, FIL_PAGE_TYPE) in (0, FIL_PAGE_INDEX) or u32(page, FIL_PAGE_OFFSET) != page_no \
+                    or offset + 8 > PAGE_SIZE or u32(page, offset) > PAGE_SIZE - offset - 8:
+                self.external_damaged = getattr(self, "external_damaged", 0) + 1
+                break
             part_len, next_page = u32(page, offset), u32(page, offset + 4)
             chunk = page[offset + 8:offset + 8 + min(part_len, ext_len - total)]
             parts.append(chunk)
@@ -1113,9 +1127,12 @@ def column_type_sql(col):
               MYSQL_NEWDATE: "date", MYSQL_TIME: "time", MYSQL_TIMESTAMP: "timestamp", MYSQL_YEAR: "year(4)"}
     if ty in simple:
         return simple[ty]
-    # DECIMAL sem precisão conhecida usa (30,10) como palpite.
+    # DECIMAL sem precisão conhecida (o dicionário só guarda os bytes): o valor sai em hexadecimal, então a coluna é
+    #   binary(len). Declarar decimal(30,10) faria o import ler o hexadecimal como número e gravar lixo, sem aviso.
     if ty == MYSQL_NEWDECIMAL:
-        p, s = col.decimal or (30, 10)
+        if not col.decimal:
+            return f"binary({col.len})"
+        p, s = col.decimal
         return f"decimal({p},{s}){unsigned}"
     if ty == MYSQL_BIT:
         return f"bit({max(1, col.len * 8)})"

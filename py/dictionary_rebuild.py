@@ -383,6 +383,14 @@ def reconstruct(carver, candidates, db_name, log=None):
     # 2) ibdata1: casar índices sem dono com as definições que sobraram.
     # Lista os índices 'sem dono' que têm folhas de verdade.
     orphans = [o for o in carver.orphan_indexes() if carver.space.leaf_pages.get(o["index_id"])]
+    # A página 7 (cabeçalho do dicionário) guarda o PRÓXIMO id de índice: nenhum índice de verdade tem id igual ou maior. Um
+    #   'índice' com id maior é cabeçalho de página estragado (lixo), e não pode ganhar de uma tabela de verdade.
+    try:
+        next_id = ic.u64(carver.space.page(7), 38 + 16)
+        if 10 < next_id < 1 << 32:
+            orphans = [o for o in orphans if o["index_id"] < next_id]
+    except (ic.CarverError, OSError):
+        pass
     if not pending or not orphans:
         for name in pending:
             missed.setdefault(name, "nenhum índice sem dono no ibdata1")

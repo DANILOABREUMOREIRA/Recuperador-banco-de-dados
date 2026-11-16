@@ -15,9 +15,11 @@ dados: sai com o nome `_sem_nome_<id>` (o nome não existe mais), para que o dad
 from innodb_carver import (DICT_CLUSTERED, DICT_HDR_FIRST_ID, DICT_N_COLS_COMPACT, PAGE_N_HEAP, Column, TableDef, u16)
 
 
-def recover_lost_tables(carver, db, frm_columns, log=lambda message: None):
-    """frm_columns = {nome da tabela: [nomes das colunas do .frm]} das tabelas com .frm e sem linha no dicionário.
-    Registra no carver as que dá para casar e devolve {nome: como foi casada}."""
+def recover_lost_tables(carver, frm_columns, log=lambda message: None, unnamed_db="_sem_banco"):
+    """frm_columns = {"banco/tabela": [nomes das colunas do .frm]} das tabelas com .frm e sem linha no dicionário (de UM ou de
+    VÁRIOS bancos da pasta: o casamento só vale se for único entre todos). As tabelas perdidas sem .frm que case ficam em
+    `unnamed_db` como `_sem_nome_<id>` (o banco de origem é desconhecido). Registra no carver as que dá para casar e devolve
+    {"banco/tabela": como foi casada}."""
     carver.load()
     known = {table.id for table in carver.tables.values()}
     columns_of, fields_of, lost = {}, {}, {}
@@ -45,19 +47,19 @@ def recover_lost_tables(carver, db, frm_columns, log=lambda message: None):
     for name, names in frm_columns.items():
         wanted.setdefault(signature(names), []).append(name)
 
-    def register(table_id, index, ordered, name):
+    def register(table_id, index, ordered, full_name):
         """Monta a tabela com o que o dicionário ainda guarda e a registra no leitor. False se não dá para usá-la."""
         compact = True
         if not index["SPACE"] and 0 < (index["PAGE_NO"] or 0) < carver.space.n_pages:
             compact = bool(u16(carver.space.page(index["PAGE_NO"]), PAGE_N_HEAP) & 0x8000)
-        table = TableDef(f"{db}/{name}", table_id, len(ordered) | (DICT_N_COLS_COMPACT if compact else 0), space_id=index["SPACE"])
+        table = TableDef(full_name, table_id, len(ordered) | (DICT_N_COLS_COMPACT if compact else 0), space_id=index["SPACE"])
         table.columns = [Column(c["NAME"], c["MTYPE"], c["PRTYPE"], c["LEN"], c["POS"]) for c in ordered]
         table.clustered_index_id, table.root_page = index["ID"], index["PAGE_NO"]
         table.generated_pk = index["NAME"] == "GEN_CLUST_INDEX"
         table.pk_columns = [col for _pos, col in sorted(fields_of.get(index["ID"], []))]
         if not table.generated_pk and not table.pk_columns:
             return False
-        carver.register_table(f"{db}/{name}", table)
+        carver.register_table(full_name, table)
         carver.index_ids.add(index["ID"])
         return True
 
@@ -78,7 +80,7 @@ def recover_lost_tables(carver, db, frm_columns, log=lambda message: None):
         if table_id in used or not carver.space.leaf_pages.get(index["ID"]):
             continue
         ordered = sorted(columns_of[table_id], key=lambda c: c["POS"])
-        name = f"_sem_nome_{table_id}"
+        name = f"{unnamed_db}/_sem_nome_{table_id}"
         if register(table_id, index, ordered, name):
             unnamed += 1
             matched[name] = ("sem nome: a linha da SYS_TABLES e o .frm se perderam; o banco de origem é desconhecido; "
