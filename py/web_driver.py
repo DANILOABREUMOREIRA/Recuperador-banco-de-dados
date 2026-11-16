@@ -231,6 +231,17 @@ class Recovery:
         """Próximo pedaço do dump da tabela em curso (bytes), ou None quando ela acabou."""
         return next(self._parts, None)
 
+    def leaf_count(self, index):
+        """Folhas (páginas de 16 KB) do índice da tabela `index`, 0 se não der para saber. Só serve para estimar o tempo."""
+        try:
+            tdef = self.carver.table(f"{self.db}/{self.tables[index][0]}")
+            if not tdef:
+                return 0
+            ts = self.carver.table_space(tdef)
+            return len(ts.leaf_pages.get(self.carver.clustered_id(tdef, ts), []))
+        except Exception:   # estimativa: nunca derruba a recuperação
+            return 0
+
     def table(self, index):
         """O dump inteiro da tabela de número `index` (DROP + CREATE + INSERTs), de uma vez."""
         return b"".join(self._table_parts(index))

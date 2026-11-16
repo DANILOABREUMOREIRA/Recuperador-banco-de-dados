@@ -293,6 +293,61 @@ const STAGES = [
 const EXTRACT_FROM = 3, EXTRACT_SPAN = 12, DICT_FROM = 15;   // a descompactação vai de 3% a 15%
 const TABLES_FROM = 24, TABLES_SPAN = 68;                    // a etapa das tabelas vai de 24% a 92%
 
+// ---------- tempo que falta ----------
+// Cada etapa tem um tamanho em bytes e uma velocidade em MB/s: tempo = bytes que faltam / velocidade.
+//   Descompactação: bytes do .zip (sabidos de antemão), velocidade medida ao vivo.
+//   Dicionário: o ibdata1 inteiro é varrido, mas a etapa não informa andamento: usa a velocidade da última recuperação.
+//   Tabelas: soma das folhas de 16 KB de cada tabela (o motor informa depois do dicionário), velocidade medida ao vivo.
+// shortcut: as velocidades iniciais abaixo são chute, valem só até uma recuperação neste navegador medir as reais (localStorage).
+const MB = 1048576, PAGE_BYTES = 16384, FINISH_SECONDS = 3;
+const DEFAULT_RATES = { extract: 12, dict: 40, tables: 10 };
+let est = null;
+function savedRates() {
+  try { return { ...DEFAULT_RATES, ...JSON.parse(localStorage.getItem('rm-rates') || '{}') }; } catch (e) { return { ...DEFAULT_RATES }; }
+}
+// Troca de etapa: guarda quantos segundos a anterior levou (para medir a velocidade real no fim).
+function estPhase(name) {
+  if (!est || est.phase === name) return;
+  est.secs[est.phase] = (Date.now() - est.t) / 1000;
+  est.phase = name; est.t = Date.now();
+}
+function tablesBytes() { return est.weights ? est.weights.reduce((a, b) => a + b, 0) * PAGE_BYTES : 0; }
+// Segundos que faltam, ou null enquanto não há tamanho para calcular.
+function estimateLeft() {
+  const e = est;
+  if (!e) return null;
+  const spent = (Date.now() - e.t) / 1000, r = e.rates;
+  const ibdata = e.ibdata || e.extractTotal;
+  if (!ibdata) return null;
+  let left = 0;
+  if (e.phase === 'extract') {
+    const rate = e.extractDone > 0 && spent >= 3 ? e.extractDone / spent : r.extract * MB;
+    left += Math.max(0, e.extractTotal - e.extractDone) / rate;
+  }
+  if (e.phase === 'extract' || e.phase === 'dict') {
+    const whole = ibdata / (r.dict * MB);
+    left += e.phase === 'dict' ? Math.max(whole - spent, whole * 0.05) : whole;
+  }
+  if (e.phase === 'extract' || e.phase === 'dict') left += ibdata / (r.tables * MB);   // folhas ainda desconhecidas: no máximo o ibdata1
+  if (e.phase === 'tables') {
+    const total = tablesBytes();
+    const done = e.prefix[e.cur] * PAGE_BYTES + e.curPart * e.weights[e.cur] * PAGE_BYTES;
+    const rate = done > 8 * MB && spent >= 3 ? done / spent : r.tables * MB;
+    left += Math.max(0, total - done) / rate;
+  }
+  return left + (e.phase === 'finish' ? Math.max(0, FINISH_SECONDS - spent) : FINISH_SECONDS);
+}
+// No fim de uma recuperação completa guarda as velocidades medidas, para a próxima estimativa começar melhor.
+function saveRates() {
+  try {
+    const s = est.secs, ibdata = est.ibdata || est.extractTotal, tables = tablesBytes(), rates = {};
+    if (s.extract > 3 && est.extractTotal) rates.extract = est.extractTotal / MB / s.extract;
+    if (s.dict > 3 && ibdata) rates.dict = ibdata / MB / s.dict;
+    if (s.tables > 3 && tables) rates.tables = tables / MB / s.tables;
+    localStorage.setItem('rm-rates', JSON.stringify({ ...JSON.parse(localStorage.getItem('rm-rates') || '{}'), ...rates }));
+  } catch (e) { /* sem armazenamento: a próxima começa com as velocidades iniciais */ }
+}
+
 const IS_LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);   // só o servidor de teste aceita ?auto e ?stream
 // A cada recuperação um número: se o usuário cancelar, o que ainda chegar do trabalho antigo é ignorado.
 let runSeq = 0;
@@ -312,6 +367,8 @@ function runRecovery(source, handle, name, onDone) {
   logs = [];
   shownError = false;
   startedAt = Date.now();
+  est = { phase: source.archive ? 'extract' : 'dict', t: startedAt, secs: {}, rates: savedRates(), extractTotal: 0, extractDone: 0,
+    ibdata: 0, weights: null, prefix: null, cur: 0, curPart: 0 };
   clearInterval(timer);
   timer = setInterval(() => { last.elapsed_s = Math.round((Date.now() - startedAt) / 1000); drawElapsed(); }, 1000);
   addLog(`Recuperação "${name}" iniciada.`);
@@ -335,6 +392,7 @@ async function extractFirst(file, myRun) {
     progress: p => {
       if (myRun !== runSeq) return;
       const part = p.done / Math.max(1, p.total);
+      if (est) { est.extractTotal = p.total; est.extractDone = p.done; }
       last.progress = Math.round(EXTRACT_FROM + EXTRACT_SPAN * part);
       last.step_description = 'Descompactando ' + file.name + (p.name ? ': ' + p.name : '');
       last.task = { label: 'Descompactação', percent: Math.round(100 * part), detail: `${fmtSize(p.done)} de ${fmtSize(p.total)}` };
@@ -372,7 +430,9 @@ async function cleanupDump() {
 function startWorker(list, handle, name, onDone) {
   const myRun = runSeq;
   let names = [], tableNo = 0;
-  addLog(`${list.length} arquivos, ibdata1 de ${fmtSize(list.find(f => f.name === 'ibdata1').data.size)}.`);
+  const ibdataSize = list.find(f => f.name === 'ibdata1').data.size;
+  addLog(`${list.length} arquivos, ibdata1 de ${fmtSize(ibdataSize)}.`);
+  if (est) { est.ibdata = ibdataSize; estPhase('dict'); }
   worker = new Worker('worker.js');
   worker.onerror = event => { if (myRun === runSeq) fail(event.message || 'Erro ao iniciar o Python no navegador.'); };
   worker.onmessage = ({ data }) => {
@@ -380,15 +440,21 @@ function startWorker(list, handle, name, onDone) {
     if (data.log) { addLog(data.log); return; }
     if (data.phase === 'prep') { setPhase(Math.max(last.progress, 2), 'Ligando o Python no navegador...', 'Preparação', null); }
     else if (data.phase === 'dict') { setPhase(DICT_FROM, 'Lendo o dicionário do ibdata1...', 'Dicionário do InnoDB', null); }
-    else if (data.phase === 'objects') { setPhase(93, 'Chaves estrangeiras, views e triggers...', 'Chaves, views e triggers', null); }
+    else if (data.phase === 'objects') { estPhase('finish'); setPhase(93, 'Chaves estrangeiras, views e triggers...', 'Chaves, views e triggers', null); }
     else if (data.phase === 'close') { setPhase(98, 'Fechando o arquivo...', 'Fechamento', null); }
     else if (data.planned) {
       names = data.planned;
+      if (est && data.weights) {   // folhas de cada tabela: a soma acumulada dá os bytes já lidos a qualquer momento
+        est.weights = data.weights;
+        est.prefix = data.weights.reduce((acc, w) => (acc.push(acc[acc.length - 1] + w), acc), [0]);
+        estPhase('tables');
+      }
       names.forEach(n => { last.tables[n] = { rows: 0, status: 'PENDING', note: '' }; });
       setPhase(TABLES_FROM, 'Lendo as tabelas...', 'Lendo tabelas', 0, `0 de ${names.length} tabelas`);
     }
     else if (data.tableStart) {
       tableNo = data.tableStart.index;
+      if (est) { est.cur = tableNo; est.curPart = 0; }
       const done = tableNo / Math.max(1, names.length);
       last.progress = Math.round(TABLES_FROM + TABLES_SPAN * done);
       last.step_description = `Tabela ${tableNo + 1} de ${names.length}: ${data.tableStart.name}`;
@@ -398,6 +464,7 @@ function startWorker(list, handle, name, onDone) {
     }
     else if (data.pages) {
       const part = data.pages.done / Math.max(1, data.pages.total);
+      if (est) est.curPart = part;
       last.progress = Math.round(TABLES_FROM + TABLES_SPAN * (tableNo + part) / Math.max(1, names.length));
       last.item = { label: last.item ? last.item.label : '', percent: Math.round(100 * part),
         detail: `${data.pages.done.toLocaleString('pt-BR')} de ${data.pages.total.toLocaleString('pt-BR')} páginas` };
@@ -442,6 +509,7 @@ function finish(report, blob, name) {
   if (worker) worker.terminate();   // solta os arquivos que o Python mantinha abertos
   worker = null;
   cleanupExtracted();
+  estPhase('done'); saveRates();
   Object.keys(report.tabelas).forEach(n => { last.tables[n] = report.tabelas[n]; });
   last.state = 'COMPLETED';
   last.progress = 100;
@@ -947,6 +1015,11 @@ function scheduleDraw(tables) {
 }
 function drawElapsed() {
   const timed = last.state !== 'IDLE' && last.elapsed_s !== null && last.elapsed_s !== undefined;
+  if (last.state === 'RUNNING') {
+    const left = estimateLeft();
+    $('elapsed').textContent = left === null ? '· calculando o tempo...' : '· faltam cerca de ' + fmtSpan(left);
+    return;
+  }
   $('elapsed').textContent = timed ? '· ' + fmtElapsed(last.elapsed_s) : '';
 }
 function draw() {

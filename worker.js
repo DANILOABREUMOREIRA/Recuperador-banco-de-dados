@@ -54,7 +54,7 @@ onmessage = async ({ data }) => {
     postMessage({ phase: "dict" });
     await put(recovery.plan());
     const names = JSON.parse(pyodide.runPython("json.dumps([name for name, _ in recovery.tables])"));
-    postMessage({ planned: names });
+    postMessage({ planned: names, weights: names.map((_, i) => recovery.leaf_count(i)) });
     for (let index = 0; index < names.length; index++) {
       postMessage({ tableStart: { index, total: names.length, name: names[index] } });
       // A tabela sai em pedaços: cada um vai para o disco antes de o Python montar o próximo.
@@ -123,7 +123,7 @@ async function recoverMany(pyodide, data, databases) {
     plans.push({ db, recovery, header, tables });
   }
   const labels = plans.flatMap(p => p.tables.map(t => `${p.db}.${t}`));
-  postMessage({ planned: labels });
+  postMessage({ planned: labels, weights: plans.flatMap(p => p.tables.map((_, i) => p.recovery.leaf_count(i))) });
 
   const reports = {};
   let counter = 0;
