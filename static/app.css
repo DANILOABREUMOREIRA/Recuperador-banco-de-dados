@@ -399,3 +399,14 @@ textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001s !important; transition-duration: .001s !important; scroll-behavior: auto !important; }
 }
+
+/* AVISO NO CANTO INFERIOR DIREITO (fim da recuperação) */
+.toasts { position: fixed; right: 18px; bottom: 18px; z-index: 200; display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+.toast { pointer-events: auto; display: flex; gap: 12px; align-items: flex-start; width: min(360px, calc(100vw - 36px)); padding: 14px 16px; border-radius: 14px;
+  background: var(--modal-bg); color: var(--text); border: 1px solid var(--line); box-shadow: 0 16px 40px rgba(20, 24, 33, .35); cursor: pointer;
+  animation: toast-in .25s ease; }
+.toast img { width: 36px; height: 36px; border-radius: 8px; flex: none; }
+.toast strong { display: block; font-size: .95rem; }
+.toast span { display: block; font-size: .85rem; color: var(--muted-2); margin-top: 2px; overflow-wrap: anywhere; }
+.toast.err strong { color: var(--err); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }

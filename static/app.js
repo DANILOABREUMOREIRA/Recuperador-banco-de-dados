@@ -197,6 +197,7 @@ function confirmName() {
   if (!value) { $('nameInput').focus(); return; }
   projectName = value;
   nameOpen = false;
+  askNotifyPermission();   // o clique em Continuar é o gesto que o navegador exige para perguntar
   showSource(projectName, (picked.kind === 'archive' ? picked.file.name : 'pasta ' + picked.name) + ' · ' + fmtSize(picked.size), true);
   closeModal();
   // Escolher outra pasta começa do zero: some o resultado anterior e o Baixar volta a ficar bloqueado.
@@ -407,6 +408,7 @@ function fail(message) {
   last.step_description = 'A recuperação falhou.';
   last.task = null; last.item = null;
   draw();
+  notify('A recuperação falhou', String(message).slice(0, 140), true);
 }
 function finish(report, blob, name) {
   clearInterval(timer);
@@ -425,6 +427,8 @@ function finish(report, blob, name) {
     `${fmtSize(report.sql_bytes)}. SHA-256 ${report.sha256}`);
   saveHistory(name, report);
   draw();
+  const warned = Object.values(report.tabelas).some(t => t.status !== 'OK');
+  notify('Recuperação concluída', `${name}: ${report.registros.toLocaleString('pt-BR')} registros em ${fmtElapsed(Math.round(report.segundos))}` + (warned ? ', com avisos.' : '.'));
 }
 function cancelRecovery() {
   if (!confirm('Cancelar a recuperação em andamento?\n\nO progresso desta execução será descartado. Os arquivos originais não são alterados.')) return;
@@ -448,6 +452,35 @@ function addLog(text) {
   logs.push(text);
   if (logs.length > 5000) logs.splice(0, logs.length - 5000);
   scheduleDraw();
+}
+
+// ---------- aviso de fim ----------
+// Um aviso no canto inferior direito da página (sempre) e, se o navegador deixou e a aba não está à vista, também uma
+// notificação do sistema (no Windows aparece no canto inferior direito da tela, como as do Claude).
+function askNotifyPermission() {
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch (e) { /* sem notificações */ }
+}
+function notify(title, body, isErr) {
+  const box = $('toasts');
+  const toast = document.createElement('div');
+  toast.className = 'toast' + (isErr ? ' err' : '');
+  const icon = document.createElement('img');
+  icon.src = 'static/icone-64.png'; icon.alt = '';
+  const text = document.createElement('div');
+  const strong = document.createElement('strong'); strong.textContent = title;
+  const span = document.createElement('span'); span.textContent = body;
+  text.append(strong, span);
+  toast.append(icon, text);
+  const close = () => toast.remove();
+  toast.addEventListener('click', close);
+  box.append(toast);
+  setTimeout(close, 15000);
+  try {
+    if ('Notification' in window && Notification.permission === 'granted' && (document.hidden || !document.hasFocus())) {
+      const system = new Notification(title, { body, icon: 'static/icone.png', tag: 'recuperador' });
+      system.onclick = () => { window.focus(); system.close(); };
+    }
+  } catch (e) { /* o aviso da página já foi mostrado */ }
 }
 
 // ---------- baixar e relatório ----------
@@ -618,6 +651,7 @@ async function startZip() {
       stop();
       if (result) { saveBlob(result, name + '.zip'); setTimeout(cleanupZip, 120000); }
       $('zipBg').classList.remove('open');
+      notify('.zip pronto', name + '.zip foi gerado.');
       note('.zip gerado em ' + fmtElapsed(Math.round((Date.now() - started) / 1000)) + (handle ? ': ' + handle.name + '.' : ': veja a pasta de downloads.'));
     }
   };
