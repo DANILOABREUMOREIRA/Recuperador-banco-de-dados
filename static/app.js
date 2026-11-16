@@ -83,7 +83,7 @@ function closeModal() {
   focusBeforeModal = null;
 }
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { if ($('zipBg').classList.contains('open')) closeZipModal(); else closeModal(); return; }
+  if (e.key === 'Escape') { if ($('zipBg').classList.contains('open')) closeZipModal(); else if ($('pickBg').classList.contains('open')) closePick(); else closeModal(); return; }
   if (e.key !== 'Tab' || !$('modalBg').classList.contains('open')) return;
   const focusable = [...$('modal').querySelectorAll('button:not([disabled]), input, textarea, [tabindex]:not([tabindex="-1"])')]
     .filter(el => el.offsetParent !== null);
@@ -95,7 +95,7 @@ document.addEventListener('keydown', e => {
 
 // ---------- escolher o banco: .zip ou a pasta data ----------
 const EMPTY_TITLE = 'Solte aqui o banco';
-const EMPTY_SUB = 'arquivo .zip ou a pasta data';
+const EMPTY_SUB = '.zip ou pasta data · nada sai do seu computador';
 const fmtSize = bytes => bytes >= 1073741824 ? (bytes / 1073741824).toFixed(2).replace('.', ',') + ' GB'
   : (bytes / 1048576).toFixed(1).replace('.', ',') + ' MB';
 
@@ -104,12 +104,17 @@ function showSource(title, sub, filled) {
   $('dropTitle').textContent = title;
   $('dropSub').textContent = sub;
 }
-function drawDest() {
-  $('destLine').textContent = CAN_STREAM
-    ? 'Ao recuperar, você escolhe onde salvar o .sql: ele é gravado direto no disco, tabela por tabela.'
-    : 'Este navegador guarda o dump no disco do navegador e baixa no fim: precisa de espaço livre extra. Para bancos grandes use o Chrome ou o Edge.';
+// Clicar na área de soltar pergunta o que escolher: o .zip ou a pasta data (um campo de arquivo não escolhe os dois).
+function openPick() {
+  if (running()) return;
+  $('pickBg').classList.add('open');
+  setTimeout(() => $('pickZip').focus(), 0);
 }
-drawDest();
+function closePick() { $('pickBg').classList.remove('open'); }
+function choose(kind) {
+  closePick();
+  $(kind === 'zip' ? 'fileInput' : 'folderInput').click();
+}
 
 // A pasta escolhida pode ser a própria data ou uma pasta acima dela: select.js acha o ibdata1 (o maior, se houver
 //   vários) e usa a pasta dele como raiz. picked = {kind: 'folder', name, files, ibdata, size} ou
@@ -192,11 +197,10 @@ function confirmName() {
   if (!value) { $('nameInput').focus(); return; }
   projectName = value;
   nameOpen = false;
-  showSource(projectName, (picked.kind === 'archive' ? 'arquivo ' + picked.file.name + ' (' + fmtSize(picked.size) + ')'
-    : 'pasta ' + picked.name + ' (' + picked.files.length + ' arquivos, ' + fmtSize(picked.size) + ')') + ' — pronto para recuperar', true);
+  showSource(projectName, (picked.kind === 'archive' ? picked.file.name : 'pasta ' + picked.name) + ' · ' + fmtSize(picked.size), true);
   closeModal();
   // Escolher outra pasta começa do zero: some o resultado anterior e o Baixar volta a ficar bloqueado.
-  if (last.state !== 'IDLE') { last = freshState(); logs = []; draw(); }
+  if (last.state !== 'IDLE') { last = freshState(); logs = []; note(''); draw(); }
   refreshButtons();
 }
 function cancelName() {
@@ -213,10 +217,13 @@ function refreshButtons() {
   $('drop').classList.toggle('locked', running());
   const done = last.state === 'COMPLETED';
   // Baixar só vale quando o navegador guardou o dump na memória; no outro caso o .sql já está no disco.
+  // Pronta a recuperação, o Recuperar some: o Baixar .sql ocupa o lugar dele e o Baixar .zip fica à direita.
+  $('btnRun').hidden = done;
+  $('btnZip').hidden = !done;
   $('btnGet').disabled = !(done && last.blob);
   $('btnGet').textContent = done && last.mode === 'disk' ? 'Salvo no disco' : 'Baixar .sql';
   $('dlSql').disabled = !(done && last.blob);
-  $('dlSqlInfo').textContent = done && last.mode === 'disk' ? 'Gravado direto no disco: ' + last.savedName : 'Todas as tabelas e dados, em script';
+  $('dlSqlInfo').textContent = done && last.mode === 'disk' ? 'Gravado direto no disco: ' + last.savedName : '';
   $('dlReport').disabled = !(done && last.report);
   const zipOk = done && !!(last.blob || last.handle) && !zipWorker;
   $('btnZip').disabled = !zipOk;
@@ -686,6 +693,7 @@ function drawHistory() {
   const list = readHistory();
   $('histCount').textContent = list.length;
   $('histClearRow').hidden = !list.length;
+  $('cardHistory').hidden = !list.length;   // sem histórico o cartão some (menos texto na tela)
   const box = $('histList');
   box.replaceChildren();
   if (!list.length) {
@@ -872,9 +880,8 @@ function draw() {
 
   if (data.state === 'COMPLETED') {
     const lossy = Object.values(data.tables).some(t => t.status !== 'OK');
-    const where = data.mode === 'disk' ? ' Arquivo gravado: ' + data.savedName + '.' : ' Clique em Baixar .sql.';
-    note((lossy ? 'Concluída em ' + fmtElapsed(data.elapsed_s) + ' com avisos em algumas tabelas — veja a lista em Tabelas recuperadas.'
-      : 'Recuperação concluída em ' + fmtElapsed(data.elapsed_s) + '.') + where);
+    const where = data.mode === 'disk' ? ' Salvo em ' + data.savedName + '.' : '';
+    note('Concluída em ' + fmtElapsed(data.elapsed_s) + (lossy ? ', com avisos em algumas tabelas.' : '.') + where);
   } else if (data.state === 'ERROR') {
     note('A recuperação falhou. Veja o log completo na barra lateral.', true);
     if (!shownError) { shownError = true; openLog('A recuperação falhou. Copie o log abaixo e envie ao suporte.'); }

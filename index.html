@@ -48,7 +48,7 @@
           <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.6"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18"/></svg>
         </button>
         <!-- A VERSÃO do site: sobe a cada publicação, para conferir que a página aberta é a atual. -->
-        <div class="rail-version" title="Versão do site">v1.1.0</div>
+        <div class="rail-version" title="Versão do site">v1.2.0</div>
       </div>
     </nav>
 
@@ -90,12 +90,11 @@
           <header class="stage-head"><h1>Recuperador de Banco MySQL</h1></header>
 
           <div class="recover-top" id="recoverTop"><div class="recover-top-in">
-            <p class="lead">Solte o banco corrompido, recupere e baixe o dump <code>.sql</code>. Tudo roda no seu computador: nada é enviado.</p>
             <!-- A ÁREA DE SOLTAR é clicável (abre o seletor de arquivos) e também funciona pelo teclado (Enter ou
                    espaço). Aceita um .zip ou a pasta data (arrastada ou escolhida pelo link logo abaixo). -->
             <div class="drop" id="drop" role="button" tabindex="0" aria-describedby="dropSub"
-                 onclick="document.getElementById('fileInput').click()"
-                 onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); document.getElementById('fileInput').click(); }">
+                 onclick="openPick()"
+                 onkeydown="if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openPick(); }">
               <input type="file" id="fileInput" accept=".zip" hidden onchange="pickFile(this.files)">
               <input type="file" id="folderInput" webkitdirectory hidden onchange="pickFolderInput(this.files)">
               <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
@@ -104,11 +103,8 @@
                 <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
               </svg>
               <h2 id="dropTitle">Solte aqui o banco</h2>
-              <p id="dropSub">arquivo .zip ou a pasta data</p>
+              <p id="dropSub">.zip ou pasta data · nada sai do seu computador</p>
             </div>
-            <button class="link-btn folder-link" id="folderLink" onclick="document.getElementById('folderInput').click()">ou escolher a pasta data</button>
-            <!-- Onde o .sql vai ficar: o app.js escreve conforme o navegador (Chrome e Edge gravam direto no disco). -->
-            <div class="dest-line" id="destLine"></div>
 
             <div class="actions">
               <button class="btn btn-run" id="btnRun" onclick="startRecovery()" disabled>
@@ -140,7 +136,7 @@
             <div class="bar-row sub" id="itemRow"><span id="itemLabel">&nbsp;</span><span id="itemDetail"></span></div>
             <div class="bar thin" id="barItem" aria-hidden="true"><div id="barItemFill"></div></div>
             <button class="cancel" id="btnCancel" onclick="cancelRecovery()" style="display:none">Cancelar recuperação</button>
-            <div class="console" id="consoleBox" role="log" aria-live="off" aria-label="Registro da recuperação" tabindex="0">Sem atividade.</div>
+            <div class="console" id="consoleBox" hidden role="log" aria-live="off" aria-label="Registro da recuperação" tabindex="0">Sem atividade.</div>
           </section>
 
           <!-- RECUPERAÇÕES ANTERIORES: ficam gravadas neste navegador (nome, data, resumo e o relatório). Some enquanto uma
@@ -171,12 +167,12 @@
 
         <!-- TELA DOWNLOADS: o dump SQL (quando o navegador o guardou na memória) e o relatório de auditoria. -->
         <section class="view" id="view-downloads">
-          <header class="stage-head"><h1>Downloads</h1><p>Arquivos gerados pela última recuperação.</p></header>
+          <header class="stage-head"><h1>Downloads</h1></header>
           <section class="card">
             <div class="dl-list">
-              <div class="dl-item"><div>Dump SQL<small id="dlSqlInfo">Todas as tabelas e dados, em script</small></div><button type="button" class="small-btn" id="dlSql" onclick="download('sql')" disabled>Baixar</button></div>
-              <div class="dl-item"><div>Dump SQL compactado<small id="dlZipInfo">O .sql, um script restaurar.bat e um LEIA-ME, em .zip</small></div><button type="button" class="small-btn" id="dlZip" onclick="openZipModal()" disabled>Baixar .zip</button></div>
-              <div class="dl-item"><div>Relatório de auditoria<small>Tabela por tabela: registros, avisos e SHA-256 do dump</small></div><button type="button" class="small-btn" id="dlReport" onclick="download('report')" disabled>Abrir</button></div>
+              <div class="dl-item"><div>Dump SQL<small id="dlSqlInfo"></small></div><button type="button" class="small-btn" id="dlSql" onclick="download('sql')" disabled>Baixar</button></div>
+              <div class="dl-item"><div>Dump SQL compactado<small id="dlZipInfo"></small></div><button type="button" class="small-btn" id="dlZip" onclick="openZipModal()" disabled>Baixar .zip</button></div>
+              <div class="dl-item"><div>Relatório de auditoria</div><button type="button" class="small-btn" id="dlReport" onclick="download('report')" disabled>Abrir</button></div>
             </div>
           </section>
         </section>
@@ -228,6 +224,19 @@
         <div class="row-end">
           <button class="small-btn" onclick="cancelName()">Cancelar</button>
           <button class="small-btn primary" onclick="confirmName()">Continuar</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- O POP-UP DE ESCOLHER O BANCO: um clique na área de soltar pergunta se é um .zip ou a pasta data. -->
+  <div class="modal-bg" id="pickBg" onclick="if (event.target === this) closePick()">
+    <div class="modal" id="pickModal" role="dialog" aria-modal="true" aria-labelledby="pickTitle" tabindex="-1">
+      <div class="modal-head"><strong id="pickTitle">Escolher o banco</strong><button class="modal-x" onclick="closePick()" title="Fechar (Esc)" aria-label="Fechar">✕</button></div>
+      <div class="modal-body">
+        <div class="row-end pick-row">
+          <button class="small-btn primary" id="pickZip" onclick="choose('zip')">Arquivo .zip</button>
+          <button class="small-btn primary" id="pickFolder" onclick="choose('folder')">Pasta data</button>
         </div>
       </div>
     </div>

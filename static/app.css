@@ -255,6 +255,8 @@ body.running #cardHistory { display: none; }
 }
 .btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 8px 20px rgba(20, 24, 33, .16); }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
+.pick-row { justify-content: stretch; margin-top: 0; }
+.pick-row .small-btn { flex: 1; padding: .8rem 1rem; }
 .btn-run { background: var(--ink); color: var(--ink-text); }
 .btn-run .fill { position: absolute; inset: 0 auto 0 0; width: 0; background: rgba(128, 128, 128, .3); transition: width .4s ease; }
 .btn-run span { position: relative; }
