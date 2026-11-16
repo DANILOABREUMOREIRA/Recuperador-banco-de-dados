@@ -904,10 +904,12 @@ class InnodbCarver:
         # Entre duas folhas perdidas, páginas zeradas (nunca folha deste índice) também eram dela: acrescenta.
         filled = set(ordered)
         for a, b in zip(ordered, ordered[1:]):
-            between = range(a + 1, b)
-            if 0 < len(between) <= 64 and all(n < ts.n_pages and (n not in leaves) and
-                                              page_health.is_blank(ts.page(n)) for n in between):
-                filled.update(between)
+            # A conta é aritmética, sem len(range(...)): um número de página lixo (até 2^32) estoura o tamanho de um
+            #   range no WebAssembly de 32 bits (OverflowError), e o motor nativo de 64 bits não mostra o erro.
+            if 0 < b - a - 1 <= 64:
+                between = range(a + 1, b)
+                if all(n < ts.n_pages and (n not in leaves) and page_health.is_blank(ts.page(n)) for n in between):
+                    filled.update(between)
         return sorted(filled)
 
     # FAZ: números para o relatório: quantas folhas a tabela tem, quantas estão com a estrutura destruída e o total de
