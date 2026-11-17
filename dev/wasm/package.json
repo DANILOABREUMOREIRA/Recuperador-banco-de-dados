@@ -1,0 +1,7 @@
+{
+  "name": "recuperador-kernel-wasm",
+  "private": true,
+  "description": "Ferramentas de desenvolvimento do kernel WebAssembly (nao vao para o site): compilador AssemblyScript e Pyodide para testar no Node.",
+  "scripts": { "build": "asc assembly/kernel.ts -o ../../kernel.wasm --optimize --noAssert --runtime stub --initialMemory 256 --maximumMemory 4096" },
+  "devDependencies": { "assemblyscript": "0.28.2", "pyodide": "0.26.4" }
+}

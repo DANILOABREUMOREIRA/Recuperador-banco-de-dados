@@ -140,6 +140,11 @@ static/theme-init.js  escolhe o tema antes de a página aparecer (o gravado, ou 
 static/*.png, *.svg   ícone dos óculos (aba do navegador) e logo da barra; favicon.ico na raiz
 zip-worker.js         lê o .zip aos pedaços e grava no OPFS
 worker.js             liga o Pyodide, monta os arquivos (WORKERFS) e grava o dump
+kernel.wasm           o laço quente (ler registros e escrever o SQL) compilado para WebAssembly (7 KB)
+kernel.js             carrega o kernel.wasm e o entrega ao Python
+py/kernel_bridge.py   descreve as colunas da tabela ao kernel e separa o resultado de cada página
+py/kernel_paths.py    as duas leituras de tabela (grandes em lotes, pequenas completas) que usam o kernel
+dev/wasm/             fonte do kernel (AssemblyScript, assembly/kernel.ts) e harness.mjs, que roda o motor no Pyodide do Node
 vendor/zip            zip.js 2.24.0 (BSD-3-Clause)
 py/web_driver.py      orquestra a leitura direta e monta o dump em pedaços
 py/stream_carver.py   lê tabelas grandes em lotes, pela árvore viva (novo; o resto de py/ é cópia do desktop)
@@ -175,6 +180,22 @@ python dev/dev_server.py <pasta data> [arquivo .zip]
 Abra `http://127.0.0.1:8765/?auto=1` para a pasta ou `?auto=archive` para o .zip (use `-` no lugar da pasta se só
 quiser o arquivo). O resultado fica em `dev/resultado_navegador.json`; o campo `sha256` tem de ser igual ao do relatório
 gerado pelo Python comum.
+
+## O kernel WebAssembly (v1.6.0)
+
+O que mais gastava tempo era o laço que, para cada registro de cada página, separava os campos, decodificava os valores e
+escrevia o texto SQL (`parse_compact`, `decode_value` e `sql_literal` em Python, rodando dentro do Pyodide). Esse laço foi
+reescrito em AssemblyScript (`dev/wasm/assembly/kernel.ts`) e compilado para `kernel.wasm`. O Python continua cuidando do
+dicionário, da árvore, do DDL e de tudo que é raro: o kernel devolve como "registro especial" (e o Python refaz do jeito
+antigo) valor fora da página (BLOB longo), FLOAT/DOUBLE, texto UTF-8 inválido e tamanhos incomuns. Se o kernel não carregar,
+o Python faz tudo sozinho, com o mesmo resultado e mais devagar. `?semkernel=1` na URL desliga o kernel, para comparar.
+
+Medido no Pyodide (o mesmo Python do navegador, rodando no Node) com um banco de 622 MB e 3,2 milhões de linhas: **158 s sem o
+kernel, 27 s com ele** nas tabelas. O texto de todas as linhas sai igual: a conferência compara o hash de cada linha com o
+Python nativo, em bancos íntegros e corrompidos, e compara também o relatório do motor (avisos e registros descartados).
+
+Para refazer o kernel: `cd dev/wasm && npm install && npm run build` (grava `kernel.wasm`). Para medir e conferir:
+`node dev/wasm/harness.mjs <pasta data> <saida.sql> kernel|python`.
 
 ## Licença
 

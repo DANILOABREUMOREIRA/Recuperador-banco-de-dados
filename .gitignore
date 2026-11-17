@@ -3,3 +3,4 @@ __pycache__/
 *.sql
 dev/resultado_navegador.json
 estudo/
+dev/wasm/node_modules/

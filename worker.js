@@ -2,8 +2,10 @@
 // Precisa ser um Web Worker: o WORKERFS lê os arquivos do disco aos pedaços (FileReaderSync), sem carregá-los na
 // memória, e a tela não trava enquanto o Python trabalha.
 importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
+importScripts("kernel.js");   // define loadKernel: o laço quente (ler registros e escrever o SQL) compilado para WebAssembly
 
-const MODULES = ["innodb_carver", "page_health", "mysql_codec", "frm_parser", "dictionary_rebuild", "stream_carver", "bigfile", "lost_tables", "web_driver"];
+const MODULES = ["innodb_carver", "page_health", "mysql_codec", "frm_parser", "dictionary_rebuild", "stream_carver", "bigfile", "lost_tables",
+  "kernel_bridge", "kernel_paths", "web_driver"];
 
 // Recebe { files: [{name: "ibdata1" | "banco/tabela.frm", data: File}], handle: FileSystemFileHandle | null,
 //   dumpDir } e avisa a tela do que acontece: {phase}, {log}, {planned}, {tableStart}, {pages}, {table}, {done} ou {error}.
@@ -26,7 +28,22 @@ onmessage = async ({ data }) => {
     pyodide.globals.set("js_log", (message) => postMessage({ log: message }));
     // streamPages (só nos testes de desenvolvimento) troca o limite de folhas a partir do qual a tabela é lida em lotes.
     pyodide.globals.set("stream_pages", data.streamPages === undefined ? null : data.streamPages);
-    pyodide.runPython("import json, web_driver");
+    pyodide.runPython("import json, web_driver, kernel_bridge");
+    // O kernel WebAssembly acelera a leitura das tabelas. Se não carregar (ou se a tela pediu ?semkernel=1), o Python faz tudo
+    //   sozinho, do jeito antigo e mais lento, com o mesmo resultado.
+    if (data.noKernel) {
+      postMessage({ log: "Kernel WebAssembly desligado (?semkernel=1): leitura só em Python." });
+    } else {
+      try {
+        const response = await fetch("kernel.wasm");
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        pyodide.globals.set("js_kernel", await loadKernel(await response.arrayBuffer()));
+        pyodide.runPython("kernel_bridge.set_kernel(js_kernel)");
+        postMessage({ log: "Kernel WebAssembly ligado: as tabelas são lidas pelo código compilado." });
+      } catch (error) {
+        postMessage({ log: `Kernel WebAssembly indisponível (${error.message}): leitura só em Python, mais lenta.` });
+      }
+    }
     const databases = JSON.parse(pyodide.runPython('json.dumps(list(web_driver.list_databases("/data")))'));
     if (databases.length > 1) {
       const result = await recoverMany(pyodide, data, databases);

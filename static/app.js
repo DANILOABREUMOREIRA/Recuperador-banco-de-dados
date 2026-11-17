@@ -187,7 +187,10 @@ function askName(suggestion) {
   nameOpen = true;
   $('nameInput').value = projectName || suggestion;
   $('nameError').textContent = '';
-  $('nameInfo').textContent = picked.kind === 'archive' ? `Arquivo ${picked.file.name}: ${fmtSize(picked.size)}.`
+  // Com o .zip, o site primeiro descompacta tudo no disco do navegador (de 3% a 15% do tempo e o tamanho do banco em espaço); com a
+  //   pasta data a leitura é direta. Por isso o aviso sugere a pasta.
+  $('nameInfo').textContent = picked.kind === 'archive'
+    ? `Arquivo ${picked.file.name}: ${fmtSize(picked.size)}. Dica: extraia o .zip e escolha a pasta data; fica mais rápido e não ocupa o disco do navegador.`
     : `Pasta ${picked.name}: ${picked.files.length} arquivos, ibdata1 de ${fmtSize(picked.ibdata.size)}.`;
   openModal();
   setTimeout(() => { $('nameInput').focus(); $('nameInput').select(); }, 50);
@@ -481,7 +484,9 @@ function startWorker(list, handle, name, onDone) {
   };
   // ?stream=N (só em localhost, para teste): lê em lotes as tabelas com mais de N folhas de 16 KB.
   const stream = IS_LOCAL ? new URLSearchParams(location.search).get('stream') : null;
-  worker.postMessage({ files: list, handle, dumpDir, streamPages: stream === null ? undefined : Number(stream) });
+  // ?semkernel=1: desliga o kernel WebAssembly (leitura só em Python, mais lenta). Serve para comparar a velocidade das duas.
+  const noKernel = new URLSearchParams(location.search).get('semkernel') === '1';
+  worker.postMessage({ files: list, handle, dumpDir, streamPages: stream === null ? undefined : Number(stream), noKernel });
   draw();
 }
 function setPhase(progress, text, label, percent, detail) {

@@ -21,6 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import dictionary_rebuild
 import frm_parser
+import kernel_bridge
+import kernel_paths
 from innodb_carver import CarverError, InnodbCarver, ddl_from_dictionary, rows_to_sql
 from lost_tables import recover_lost_tables
 from stream_carver import stream_table
@@ -289,9 +291,15 @@ class Recovery:
             yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8"))
             stats = {}
             try:
-                for columns, records in stream_table(self.carver, full, ddl_hint=hint, progress=self.on_pages, stats=stats):
-                    rows += len(records)
-                    yield self._emit(rows_to_sql(name, columns, records) + b"\n")
+                if kernel_bridge.available():
+                    # no navegador, o kernel WebAssembly converte as páginas e já entrega o texto SQL
+                    for columns, count, pieces in kernel_paths.stream_sql(self.carver, full, ddl_hint=hint, progress=self.on_pages, stats=stats):
+                        rows += count
+                        yield self._emit(kernel_paths.inserts(name, columns, pieces) + b"\n")
+                else:
+                    for columns, records in stream_table(self.carver, full, ddl_hint=hint, progress=self.on_pages, stats=stats):
+                        rows += len(records)
+                        yield self._emit(rows_to_sql(name, columns, records) + b"\n")
                 if stats.get("bad_records"):
                     problem = f"{stats['bad_records']} registros ilegíveis descartados"
                 if stats.get("damaged_pages"):
@@ -312,8 +320,12 @@ class Recovery:
         else:
             data = b""
             try:
-                columns, records, stats = self.carver.carve(full, ddl_hint=hint, progress=self.on_pages)
-                data, rows = rows_to_sql(name, columns, records), len(records)
+                if kernel_bridge.available():
+                    columns, count, pieces, stats = kernel_paths.carve_sql(self.carver, full, ddl_hint=hint, progress=self.on_pages)
+                    data, rows = kernel_paths.inserts(name, columns, pieces), count
+                else:
+                    columns, records, stats = self.carver.carve(full, ddl_hint=hint, progress=self.on_pages)
+                    data, rows = rows_to_sql(name, columns, records), len(records)
                 if stats["bad_records"]:
                     problem = f"{stats['bad_records']} registros ilegíveis descartados"
                 health = self.carver.tree_health(full)
