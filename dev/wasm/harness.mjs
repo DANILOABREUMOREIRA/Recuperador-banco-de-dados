@@ -37,8 +37,15 @@ if (mode === "kernel") {
 }
 console.log(`[${((Date.now() - started) / 1000).toFixed(1)}s] Pyodide pronto (${mode})`);
 
+// PROFILE=1: roda sob cProfile e imprime as 30 funções que mais gastam tempo próprio (tottime).
+const profile = process.env.PROFILE ? "True" : "False";
+// PRE=arquivo.py: Python extra executado antes da recuperação (contadores, ajustes de teste).
+if (process.env.PRE) pyodide.runPython(fs.readFileSync(process.env.PRE, "utf8"));
 const result = pyodide.runPython(`
-import json, time, web_driver
+import json, time, web_driver, cProfile, pstats, io
+PROFILE = ${profile}
+prof = cProfile.Profile() if PROFILE else None
+if prof: prof.enable()
 t0 = time.time()
 rec = web_driver.Recovery("/data", log=lambda m: None, database=db_name)
 f = open("/out/" + out_name, "wb")
@@ -55,9 +62,17 @@ for i in range(len(rec.tables)):
         f.write(c)
     times[rec.tables[i][0]] = round(time.time() - ts, 2)
 f.write(rec.finish())
+if PROFILE or True:
+    import builtins
+    getattr(builtins, "_dump", lambda: None)()
 f.close()
 report = json.loads(rec.report())
 open("/out/" + out_name + ".report.json", "w", encoding="utf8").write(json.dumps(report, ensure_ascii=False))
+if prof:
+    prof.disable()
+    buf = io.StringIO()
+    pstats.Stats(prof, stream=buf).sort_stats("tottime").print_stats(30)
+    open("/out/" + out_name + ".prof.txt", "w", encoding="utf8").write(buf.getvalue())
 json.dumps({"plan_s": round(t1 - t0, 1), "tables_s": round(time.time() - t1, 1), "rows": report["registros"], "tables": times})
 `);
 const data = JSON.parse(result);

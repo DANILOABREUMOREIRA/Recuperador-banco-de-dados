@@ -187,7 +187,7 @@ O que mais gastava tempo era o laço que, para cada registro de cada página, se
 escrevia o texto SQL (`parse_compact`, `decode_value` e `sql_literal` em Python, rodando dentro do Pyodide). Esse laço foi
 reescrito em AssemblyScript (`dev/wasm/assembly/kernel.ts`) e compilado para `kernel.wasm`. O Python continua cuidando do
 dicionário, da árvore, do DDL e de tudo que é raro: o kernel devolve como "registro especial" (e o Python refaz do jeito
-antigo) valor fora da página (BLOB longo), FLOAT/DOUBLE, texto UTF-8 inválido e tamanhos incomuns. Se o kernel não carregar,
+antigo) valor fora da página (BLOB longo), texto UTF-8 inválido e tamanhos incomuns. Se o kernel não carregar,
 o Python faz tudo sozinho, com o mesmo resultado e mais devagar. `?semkernel=1` na URL desliga o kernel, para comparar.
 
 Medido no Pyodide (o mesmo Python do navegador, rodando no Node) com um banco de 622 MB e 3,2 milhões de linhas: **158 s sem o

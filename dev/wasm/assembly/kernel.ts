@@ -5,7 +5,7 @@
 //   innodb_carver.iter_records + parse_compact + decode_value + sql_literal: o trecho que mais gasta tempo.
 // EQUIVALÊNCIA: o texto de saída tem de ser IDÊNTICO ao do Python (o hash de cada linha é conferido nos testes). O que o
 //   kernel não sabe fazer com segurança vira registro ESPECIAL e o Python o refaz do jeito antigo: valor fora da página
-//   (BLOB longo), FLOAT/DOUBLE (o repr do Python não é reproduzido aqui), texto UTF-8 inválido e tamanhos incomuns.
+//   (BLOB longo), texto UTF-8 inválido e tamanhos incomuns.
 //
 // MODOS: 0 = leitura em lotes (só texto das linhas vivas, juntas por vírgula); 1 = leitura completa (por registro: chave,
 //   transação, apagado e texto, para o Python tirar as duplicatas das páginas antigas).
@@ -386,7 +386,15 @@ function putField(f: i32): i32 {
   if (kind == K_INT || kind == K_DATETIME || kind == K_DATE || kind == K_TIME || kind == K_TIMESTAMP || kind == K_YEAR) {
     return putInteger(off, len, (flags & F_UNSIGNED) != 0);
   }
-  if (kind == K_FLOAT) return R_SPECIAL;
+  if (kind == K_FLOAT) {
+    // O texto do número (repr do Python) não é feito aqui: o kernel deixa 0xFF (byte que nunca sai em texto UTF-8 válido),
+    // o tipo (0 = 4 bytes, 1 = 8 bytes) e os bytes do número; kernel_bridge.fix_floats troca isso pelo texto.
+    let size = fld(f, 5);
+    if (len != size || (size != 4 && size != 8)) return R_SPECIAL;
+    put(255); put(size == 4 ? 0 : 1);
+    for (let i = 0; i < len; i++) put(pg(off + i));
+    return R_OK;
+  }
   if (kind == K_DECIMAL) return putDecimal(off, len, fld(f, 5), fld(f, 6));
   if (kind == K_BIT) {
     if (len > 8) return R_SPECIAL;

@@ -8,6 +8,7 @@ kernel_bridge.py - Ponte entre o Python (Pyodide) e o kernel WebAssembly (kernel
 #   sabe fazer (valor fora da página, FLOAT/DOUBLE, texto UTF-8 inválido) volta como "registro especial" e o Python o refaz.
 # FORA DO NAVEGADOR (Python comum, testes): KERNEL fica None e tudo roda no caminho antigo, só em Python.
 
+import re
 import struct
 
 from innodb_carver import (CHARSET_BINARY, DATA_BINARY, DATA_BLOB, DATA_DOUBLE, DATA_FIXBINARY, DATA_FLOAT, DATA_INT, DATA_MYSQL,
@@ -20,6 +21,7 @@ K_DECIMAL, K_BIT, K_BINARY, K_UTF8, K_CP1252 = 9, 10, 11, 12, 13
 F_UNSIGNED, F_RSTRIP = 1, 2
 SYS_NAMES = ("DB_ROW_ID", "DB_TRX_ID", "DB_ROLL_PTR")
 MODE_BATCH, MODE_FULL = 0, 1
+_INF = float("inf")
 
 KERNEL = None        # o objeto JS (kernel.js), registrado pelo worker.js; None = sem kernel
 ENABLED = True       # os testes desligam para medir o caminho antigo
@@ -44,7 +46,7 @@ def field_kind(col):
                 MYSQL_TIMESTAMP: K_TIMESTAMP, MYSQL_YEAR: K_YEAR}.get(ty, K_INT)
         return kind, (F_UNSIGNED if col.unsigned else 0), 0, 0
     if mt in (DATA_FLOAT, DATA_DOUBLE):
-        return K_FLOAT, 0, 0, 0
+        return K_FLOAT, 0, 4 if mt == DATA_FLOAT else 8, 0     # p = tamanho esperado em bytes
     if ty == MYSQL_NEWDECIMAL:
         if col.decimal:
             return K_DECIMAL, 0, col.decimal[0], col.decimal[1]
@@ -107,7 +109,21 @@ class Page:
 
     # modo 0: o texto das linhas vivas juntas por vírgula (o kernel deixa uma vírgula depois de cada linha)
     def text(self):
-        return self.blob[:-1] if self.blob else b""
+        return fix_floats(self.blob[:-1]) if self.blob else b""
+
+
+_FLOAT = re.compile(rb"\xff(?:\x00(.{4})|\x01(.{8}))", re.S)
+
+
+def _float_text(m):
+    value = struct.unpack("<f", m[1])[0] if m[1] is not None else struct.unpack("<d", m[2])[0]
+    return b"NULL" if value != value or value in (_INF, -_INF) else repr(value).encode()
+
+
+# FAZ: troca os marcadores de FLOAT/DOUBLE que o kernel deixa no texto pelo número escrito como o Python escreve (repr);
+#   NaN e infinito viram NULL, como em innodb_carver.float_or_none.
+def fix_floats(text):
+    return _FLOAT.sub(_float_text, text) if b"\xff" in text else text
 
 
 # FAZ: prepara a tabela para o kernel, ou devolve None quando não dá (formato REDUNDANT, sem kernel, desligado, colunas demais).

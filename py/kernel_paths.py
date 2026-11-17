@@ -201,7 +201,7 @@ def carve_sql(carver, name, ddl_hint=None, progress=None):
                 stats["duplicates"] += 1
                 if version <= best[key][0]:
                     continue
-            best[key] = (version, deleted, b"" if deleted else blob[meta[i + 6]:meta[i + 6] + meta[i + 7]])
+            best[key] = (version, deleted, b"" if deleted else kernel_bridge.fix_floats(blob[meta[i + 6]:meta[i + 6] + meta[i + 7]]))
         for origin in result.specials:
             python_record(page, origin, lsn)
     if progress:
