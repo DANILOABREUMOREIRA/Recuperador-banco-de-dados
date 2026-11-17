@@ -66,6 +66,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self):
+        if self.path.startswith("/saveout/"):       # teste: o navegador entrega o arquivo que montou (ex.: o restaurador .bat) para conferir no disco
+            name = os.path.basename(urllib.parse.unquote(self.path[9:]))
+            os.makedirs(os.path.join(HERE, "saida_teste"), exist_ok=True)
+            with open(os.path.join(HERE, "saida_teste", name), "wb") as out:
+                remaining = int(self.headers.get("Content-Length", 0))
+                while remaining:
+                    chunk = self.rfile.read(min(remaining, 1 << 20))
+                    out.write(chunk)
+                    remaining -= len(chunk)
+            self.send_response(204)
+            self.end_headers()
+            return
         if self.path != "/result":
             self.send_error(404)
             return

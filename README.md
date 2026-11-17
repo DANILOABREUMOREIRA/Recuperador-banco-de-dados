@@ -202,3 +202,31 @@ Para refazer o kernel: `cd dev/wasm && npm install && npm run build` (grava `ker
 GPL-2.0 (arquivo `LICENSE`). `py/innodb_carver.py` porta a lógica de formato do
 [TwinDB undrop-for-innodb](https://github.com/twindb/undrop-for-innodb), que é GPL-2.0. As bibliotecas em `vendor/`
 mantêm as licenças delas (arquivos `LICENSE` em cada pasta).
+
+## O restaurador (.bat que se extrai sozinho)
+Depois da recuperação, **Baixar restaurador** gera um único arquivo `.bat` que também é um `.zip`: o texto de
+`static/gerar_pasta_data.bat.txt` vai na frente e o `.zip` (os `.sql`, o `restaurar.bat` e um LEIA-ME) vem colado depois
+(`zip-out-worker.js`, parâmetros `prefix` e `raw`; com vários bancos o `.zip` pronto é copiado). O `tar` do Windows 10 (1803+) lê o
+`.zip` por trás do texto. Dois cliques criam, ao lado do arquivo, a pasta **banco de dados recuperado**:
+- `sql\` os `.sql` (um por banco), o `restaurar.bat` (importa num MySQL com senha) e o LEIA-ME;
+- `data\` a pasta data pronta para o MySQL, gerada com o MySQL instalado no computador. Sem MySQL, só a pasta `sql` sai.
+
+Como gera a `data`:
+- acha o `mysqld.exe` pelo serviço do Windows (`reg query`), depois por `Program Files` e pelo PATH;
+- sobe uma cópia **temporária** só por pipe do Windows (`--skip-networking --enable-named-pipe`): sem porta, sem conflito com o
+  MySQL em uso, sem senha (`--skip-grant-tables`, só local); o MySQL instalado não é tocado;
+- cria o esquema `mysql` copiando o do MySQL instalado (ou de `mysql_original\` ao lado do `.bat`, que mantém usuários e senhas do
+  banco original) e, se não houver, pelo roteiro `share\mysql_system_tables*.sql`;
+- lê o `my.ini` (serviço ou `ProgramData`) só para `lower_case_table_names` e `character-set-server`;
+- importa os `.sql`, mostra tabelas, views, gatilhos e chaves estrangeiras, desliga com `innodb_fast_shutdown=0`, espera os
+  arquivos soltarem e apaga `ib_logfile*` (o MySQL do sistema recria no tamanho do `my.ini` dele: evita o erro de log de tamanho diferente);
+- grava `gerar_pasta_data.log` e `mysql_temporario.log` na pasta nova.
+
+**Regra do `.bat`:** nada de `goto` para trás (rótulo acima do `goto`). O `cmd` procura o rótulo seguindo até o fim do arquivo e o
+`.zip` binário que vem depois do último `exit /b` quebra a busca ("não pode localizar o rótulo"). Os laços usam `for /l`.
+
+Escolher o banco: clicar na área abre direto a janela de escolher o `.zip`; a pasta `data` entra arrastada (o navegador não tem
+janela que escolha arquivo e pasta juntos).
+
+Medido (MySQL 5.5.38, lc_sistemas, `.sql` de 113 MB, 262.835 linhas, 244 tabelas): 27 s do duplo clique à pasta pronta; a `data`
+sobe com `innodb_log_file_size=71M` e tem as mesmas 262.835 linhas. Não troca a `data` do sistema: isso fica com quem usa.

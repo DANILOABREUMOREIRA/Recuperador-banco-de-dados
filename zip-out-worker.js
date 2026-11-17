@@ -1,6 +1,8 @@
 // zip-out-worker.js - compacta o dump (.sql) num .zip em fluxo: o .sql é lido aos pedaços e o .zip é gravado aos pedaços,
 // então o tamanho do banco não é limitado pela memória (um dump de 20 GB não passa pela memória do navegador).
-// Recebe { file: File (o .sql), sqlName, extras: [{name, text}], handle: FileSystemFileHandle | null, dir }.
+// Recebe { file: File (o .sql), sqlName, extras: [{name, text}], handle: FileSystemFileHandle | null, dir, prefix, raw }.
+//   prefix: texto gravado ANTES do .zip (o .bat que se extrai sozinho: o arquivo é .bat e .zip ao mesmo tempo; o tar do Windows
+//   acha o .zip depois do texto). raw: o `file` já é um .zip pronto (vários bancos): é só copiado depois do prefixo.
 //   Com handle (Chrome e Edge) o .zip é gravado direto no arquivo que o usuário escolheu. Sem handle vai para o disco do
 //   navegador (OPFS, pasta dir) e volta como File para a tela baixar.
 // Avisa {progress: {done, total}}, {done: {file}} ou {error}.
@@ -24,7 +26,7 @@ async function opfsSink(dir) {
 
 onmessage = async ({ data }) => {
   try {
-    const { file, sqlName, extras, handle, dir } = data;
+    const { file, sqlName, extras, handle, dir, prefix, raw } = data;
     let sink = null, writable;
     if (handle) writable = await handle.createWritable();
     else {
@@ -33,6 +35,27 @@ onmessage = async ({ data }) => {
       }
       sink = await opfsSink(dir);
       writable = sink.writable;
+    }
+    if (prefix) {
+      const head = writable.getWriter();
+      await head.write(new TextEncoder().encode(prefix));
+      head.releaseLock();
+    }
+    if (raw) {                                  // o .zip de vários bancos já está pronto: copia aos pedaços
+      const out = writable.getWriter();
+      const reader = file.stream().getReader();
+      let done = 0, lastRaw = 0;
+      for (;;) {
+        const { value, done: end } = await reader.read();
+        if (end) break;
+        await out.write(value);
+        done += value.byteLength;
+        const now = Date.now();
+        if (now - lastRaw > 250) { lastRaw = now; postMessage({ progress: { done, total: file.size } }); }
+      }
+      await out.close();
+      postMessage({ done: { file: sink ? await sink.file() : null } });
+      return;
     }
     const writer = new zip.ZipWriter(writable, { zip64: file.size >= 2 ** 31 });
     // Os textos pequenos primeiro: se for cancelado no meio, o que já entrou continua legível.
