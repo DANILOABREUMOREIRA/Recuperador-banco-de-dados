@@ -1,5 +1,8 @@
 # Recuperador MySQL InnoDB - versão navegador
 
+> [!WARNING]
+> **Projeto em desenvolvimento.** Pode ter instabilidades e nem tudo funciona ainda: estou trabalhando nele e o comportamento pode mudar a qualquer momento. Use com cuidado e mantenha uma cópia dos seus arquivos originais.
+
 Recupera tabelas **InnoDB** de um banco MySQL 5.x (pasta `data` ou `.zip`) direto no navegador, sem instalar
 nada e sem servidor. Os arquivos são lidos no computador do usuário: nada é enviado para a internet.
 
