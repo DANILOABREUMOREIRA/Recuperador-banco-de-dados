@@ -167,8 +167,14 @@ function refreshButtons() {
   // Baixar só vale quando o navegador guardou o dump na memória; no outro caso o .sql já está no disco.
   // Pronta a recuperação, o Recuperar some: o Baixar .sql ocupa o lugar dele e o Baixar .zip fica à direita.
   $('btnRun').hidden = done;
-  // Com vários bancos o resultado já é um .zip (um .sql por banco): não há .sql avulso nem segundo .zip.
+  // Com vários bancos o resultado já é um .zip (um .sql por banco): o botão do dump vira "Baixar .zip".
+  const multi = done && !!last.multi;
   $('btnZip').hidden = !done;
+  $('btnGet').disabled = !(done && last.blob);
+  $('btnGet').textContent = done && last.mode === 'disk' ? 'Salvo no disco' : multi ? 'Baixar .zip' : 'Baixar .sql';
+  $('dlSql').disabled = !(done && last.blob);
+  $('dlSqlName').textContent = multi ? 'Dumps SQL de todos os bancos (.zip)' : 'Dump SQL';
+  $('dlSqlInfo').textContent = done && last.mode === 'disk' ? 'Gravado direto no disco: ' + last.savedName : '';
   $('dlReport').disabled = !(done && last.report);
   const zipOk = done && !!(last.blob || last.handle) && !zipWorker;
   $('btnZip').disabled = !zipOk;
@@ -181,12 +187,46 @@ function setRunLabel() {
 // ---------- recuperação ----------
 const fileSafe = name => name.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '') || 'banco_recuperado';
 
-// FAZ: o clique em Recuperar. Não pergunta onde salvar: o dump fica no disco do navegador e o local só é escolhido ao baixar o restaurador.
-function startRecovery() {
+// (o clique em Recuperar pergunta onde salvar, no Chrome e no Edge: startRecovery)
+// Os bancos de usuário de uma lista de caminhos: a pasta pai de cada .frm (fora os bancos do sistema). Igual ao Python.
+const SYSTEM_DBS = new Set(['mysql', 'performance_schema', 'information_schema']);
+function databasesIn(paths) {
+  const found = new Set();
+  for (const path of paths) {
+    const m = /(?:^|\/)([^/]+)\/[^/]+\.frm$/i.exec(path);
+    if (m && !SYSTEM_DBS.has(m[1].toLowerCase())) found.add(m[1]);
+  }
+  return found;
+}
+// Quantos bancos a recuperação vai ter (vários bancos saem num .zip, um só sai num .sql). No .zip lê só o índice dele.
+async function countDatabases() {
+  if (picked.kind !== 'archive') return databasesIn(picked.files.map(f => f.name)).size;
+  try {
+    const zip = await import('../vendor/zip/zip.min.js');
+    zip.configure({ useWebWorkers: false });
+    const reader = new zip.ZipReader(new zip.BlobReader(picked.file));
+    const entries = await reader.getEntries();
+    await reader.close();
+    return databasesIn(entries.map(e => e.filename)).size;
+  } catch (e) { return 1; }
+}
+async function startRecovery() {
   if (running() || !picked || !projectName) return;
-  askNotifyPermission();   // o clique em Recuperar é o gesto que o navegador exige para perguntar
+  let handle = null;
+  const many = (await countDatabases()) > 1;
+  if (CAN_STREAM) {
+    try {
+      handle = await window.showSaveFilePicker(many
+        ? { suggestedName: fileSafe(projectName) + '.zip', types: [{ description: 'Arquivo ZIP', accept: { 'application/zip': ['.zip'] } }] }
+        : { suggestedName: fileSafe(projectName) + '.sql', types: [{ description: 'Dump SQL', accept: { 'application/sql': ['.sql'] } }] });
+    } catch (error) {
+      if (error.name !== 'AbortError') note('Não foi possível escolher o local do arquivo: ' + error.message, true);
+      return;
+    }
+  }
+  askNotifyPermission();   // gesto do clique em Recuperar: o navegador exige para perguntar
   note('');
-  runRecovery(picked.kind === 'archive' ? { archive: picked.file } : { files: picked.files }, null, projectName);
+  runRecovery(picked.kind === 'archive' ? { archive: picked.file } : { files: picked.files }, handle, projectName);
 }
 
 // AS ETAPAS (a estante e a dica): nome, descrição e a porcentagem em que cada uma começa.
@@ -531,10 +571,11 @@ function download(type) {
   if (type === 'sql' && last.blob) saveBlob(last.blob, fileSafe(last.projectName) + (last.multi ? '.zip' : '.sql'));
   else if (type === 'report' && last.report) openReportOf(last.report, last.projectName);
 }
+function onGet() { download('sql'); }
 function openReport() { download('report'); }
 
 // ---------- baixar o dump compactado (.zip) ----------
-// O .zip leva o .sql, um restaurar.bat, um gerar_pasta_data.bat e um LEIA-ME. É montado em fluxo (zip-out-worker.js): o tamanho do dump não é
+// O .zip leva o .sql, um restaurar.bat e um LEIA-ME, colados no fim do restaurador (.exe). É montado em fluxo (zip-out-worker.js): o tamanho do dump não é
 // limitado pela memória. No Chrome e no Edge grava direto no arquivo escolhido; nos outros passa pelo disco do navegador.
 let zipWorker = null, zipDir = null, zipSeq = 0;
 // Velocidade da compactação (MB/s): a de um computador comum (rápida) e a de um lento. Só serve para estimar o tempo.
@@ -558,10 +599,10 @@ function openZipModal() {
   prefixLoad = batPrefix();
   if (!(last.state === 'COMPLETED' && (last.blob || last.handle)) || zipWorker) return;
   const bytes = last.report ? last.report.sql_bytes : (last.blob ? last.blob.size : 0);
-  $('zipText').innerHTML = `Esta operação <b>pode demorar</b>: o dump de <b>${fmtSize(bytes)}</b> será empacotado num único arquivo <b>.bat</b> que se extrai sozinho. ` +
-    `Tempo estimado: <b>${zipEstimate(bytes)}</b> (depende do seu computador). Não feche a aba até terminar.`;
-  $('zipInfo').textContent = CAN_STREAM ? 'Você escolhe onde salvar o .bat; ele é gravado direto no arquivo. Depois é só dar dois cliques nele.'
-    : `Este navegador guarda o .bat no disco do navegador e baixa no fim: precisa de uns ${fmtSize(bytes * 0.35)} livres.`;
+  $('zipText').innerHTML = `Esta operação <b>pode demorar</b>: o dump de <b>${fmtSize(bytes)}</b> será empacotado num único <b>restaurador (.exe)</b> que, com dois cliques, cria a pasta <b>data</b> pronta e os <b>.sql</b>. ` +
+    `Tempo estimado do arquivo: <b>${zipEstimate(bytes)}</b> (depende do seu computador). Não feche a aba até terminar.`;
+  $('zipInfo').textContent = CAN_STREAM ? 'Você escolhe onde salvar o .exe; ele é gravado direto no arquivo. Depois é só dar dois cliques nele (o Windows pode avisar que o arquivo é desconhecido: Mais informações > Executar assim mesmo).'
+    : `Este navegador guarda o .exe no disco do navegador e baixa no fim: precisa de uns ${fmtSize(bytes * 0.35)} livres.`;
   $('zipError').textContent = '';
   $('zipBar').hidden = true;
   $('zipFill').style.width = '0';
@@ -590,14 +631,14 @@ async function cleanupZip() {
   const { cleanup } = await import('./extract.js');
   await cleanup(dir);
 }
-// O restaurador é um .bat E um .zip ao mesmo tempo: o texto de static/gerar_pasta_data.bat.txt vai na frente e o .zip com os
-// .sql vem colado depois (o tar do Windows acha o .zip). Dois cliques nele criam a pasta "banco de dados recuperado" com
-// sql\ e data\. Se o texto não carregar, sai um .zip comum, como antes.
+// O restaurador é um .exe E um .zip ao mesmo tempo: o programa static/restaurar_stub.exe (o motor do Recuperador com o MySQL
+// embutido) vai na frente e o .zip com os .sql vem colado depois (o programa lê o próprio .zip). Dois cliques nele criam a pasta
+// "banco de dados recuperado" com sql\ e data\. Se o programa não carregar, sai um .zip comum, como antes.
 async function batPrefix() {
   try {
-    const response = await fetch('static/gerar_pasta_data.bat.txt', { cache: 'no-cache' });
+    const response = await fetch('static/restaurar_stub.exe', { cache: 'no-cache' });
     if (!response.ok) return null;
-    return (await response.text()).replace(/\r?\n/g, '\r\n');
+    return new Uint8Array(await response.arrayBuffer());
   } catch (error) { return null; }
 }
 function zipTexts(packed) {
@@ -612,7 +653,7 @@ function zipTexts(packed) {
     '  1. Dê dois cliques em restaurar.bat e informe a senha do MySQL quando ele pedir.',
     '     Ou, num terminal:  mysql -u root -p < "' + sql + '"',
     '  O dump cria o banco "' + (report.banco || '') + '" e as tabelas, e insere os registros.',
-    ...(packed ? ['', 'A pasta data pronta para o MySQL está na pasta "data", ao lado desta pasta "sql" (se havia MySQL instalado).'] : []),
+    ...(packed ? ['', 'A pasta data pronta para o MySQL foi gerada pelo restaurador (.exe), ao lado desta pasta "sql".'] : []),
     '',
     'CONFERÊNCIA:',
     '  Tabelas: ' + (report.tabelas ? Object.keys(report.tabelas).length : '-'),
@@ -643,17 +684,17 @@ async function startZip() {
   if (zipWorker) return;
   $('zipError').textContent = '';
   // O destino é escolhido AGORA, no clique (o navegador só deixa abrir o seletor de arquivo a partir de um clique).
-  const prefix = await (prefixLoad || batPrefix());   // sem o texto do .bat sai um .zip comum (já carregado ao abrir o pop-up: o seletor de arquivo exige o clique recente)
-  const ext = prefix ? '.bat' : '.zip';
+  const prefix = await (prefixLoad || batPrefix());   // sem o programa (.exe) sai um .zip comum (já carregado ao abrir o pop-up: o seletor de arquivo exige o clique recente)
+  const ext = prefix ? '.exe' : '.zip';
   let handle = null;
   if (CAN_STREAM) {
     try {
       handle = await window.showSaveFilePicker({ suggestedName: fileSafe(last.projectName) + (prefix ? '_restaurar' : '') + ext,
-        types: [prefix ? { description: 'Restaurador (.bat)', accept: { 'application/octet-stream': ['.bat'] } }
+        types: [prefix ? { description: 'Restaurador (.exe)', accept: { 'application/octet-stream': ['.exe'] } }
           : { description: 'Arquivo ZIP', accept: { 'application/zip': ['.zip'] } }] });
     } catch (error) {
       if (error.name === 'AbortError') return;
-      handle = null;                               // o navegador recusou gravar direto (alguns bloqueiam .bat): passa pelo disco dele e baixa
+      handle = null;                               // o navegador recusou gravar direto (alguns bloqueiam .exe): passa pelo disco dele e baixa
       $('zipInfo').textContent = 'Não consegui gravar direto neste local; o arquivo será baixado no fim.';
     }
   }

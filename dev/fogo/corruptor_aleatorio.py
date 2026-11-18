@@ -46,13 +46,15 @@ def row_hash(values):
 class Oraculo:
     """Sabe a que tabela pertence cada página de folha da cópia íntegra e decodifica as linhas de uma página."""
 
-    def __init__(self, data):
+    def __init__(self, data, only_db=None):
         self.data = data
         self.carver = InnodbCarver(os.path.join(data, "ibdata1"), log=lambda m: None, data_dir=data).load()
         self.owner, self.tables = {}, {}
         for name, table in sorted(self.carver.tables.items()):
             if "/" not in name or name.split("/", 1)[0].lower() in HIDDEN or name.split("/", 1)[0].lower().startswith("sys"):
                 continue
+            if only_db and name.split("/", 1)[0].lower() != only_db.lower():
+                continue   # bancos que não são o do teste: não têm o que cobrar, e ler todos custa horas
             ts = self.carver.table_space(table)
             if ts is not self.carver.space:
                 continue
@@ -136,16 +138,22 @@ class Oraculo:
 
 class Estrago:
     def __init__(self, original, data, gabarito, seed):
-        for path in (original, data):
-            if "programdata" in os.path.abspath(path).lower():
-                sys.exit("RECUSADO: este script não mexe na pasta do MySQL em ProgramData.")
+        if "programdata" in os.path.abspath(data).lower():   # o original só é lido; o que recebe o estrago nunca fica no MySQL
+            sys.exit("RECUSADO: este script não escreve na pasta do MySQL em ProgramData.")
         if os.path.abspath(original) == os.path.abspath(data):
             sys.exit("RECUSADO: o estrago vai numa CÓPIA, diferente do original.")
         self.data, self.gabarito, self.seed = data, gabarito, seed
         self.rng = random.Random(seed)
         self.ibdata = os.path.join(data, "ibdata1")
-        self.oraculo = Oraculo(original)   # lê o original íntegro: o que as páginas tinham antes de qualquer dano
+        # FOGO_SO_BANCO=<banco>: o ibdata1 é compartilhado por vários bancos; o estrago cai só nas páginas do banco escolhido
+        #   (e no dicionário), como num teste de um banco só.
+        self.only_db = os.environ.get("FOGO_SO_BANCO") or None
+        self.oraculo = Oraculo(original, self.only_db)   # lê o original íntegro: o que as páginas tinham antes de qualquer dano
         self.n_pages = self.oraculo.n_pages
+        self.universe = None
+        if self.only_db:
+            dictionary = set().union(*self.oraculo.dictionary.values())
+            self.universe = sorted(p for p in set(self.oraculo.owner) | dictionary if p >= 8)
         self.log = []
         self.allowed = {}         # tabela -> [hashes que podem sumir]
         self.changed = {}         # tabela -> quantas linhas podem aparecer alteradas
@@ -160,7 +168,12 @@ class Estrago:
         return max(1, int(self.rng.randint(low, high) * self.scale))
 
     def random_pages(self, k, low=8):
+        if self.universe:
+            return sorted({self.rng.choice(self.universe) for _ in range(k)})
         return sorted({self.rng.randrange(low, self.n_pages) for _ in range(k)})
+
+    def random_page(self):
+        return self.rng.choice(self.universe) if self.universe else self.rng.randrange(8, self.n_pages)
 
     def write_at(self, page, data, offset=0):
         with open(self.ibdata, "r+b") as f:
@@ -201,7 +214,7 @@ class Estrago:
         runs = []
         for _ in range(self.rng.randint(1, 3)):
             size = self.count(1, 200)
-            start = self.rng.randrange(8, max(9, self.n_pages - size))
+            start = self.random_page() if self.universe else self.rng.randrange(8, max(9, self.n_pages - size))
             pages = list(range(start, min(self.n_pages, start + size)))
             self.destroy(pages, "bloco")
             for p in pages:
@@ -241,6 +254,8 @@ class Estrago:
         for _ in range(self.rng.randint(1, 4)):
             size = int(self.rng.choice([512, 4096, 65536, 1 << 20, 3 << 20]) * min(self.scale, 3))
             start = self.rng.randrange(8 * PAGE_SIZE, max(8 * PAGE_SIZE + 1, self.n_pages * PAGE_SIZE - size))
+            if self.universe:
+                start = self.random_page() * PAGE_SIZE
             first, last = start // PAGE_SIZE, (start + size) // PAGE_SIZE
             self.flipped_pages(range(first, min(self.n_pages, last + 1)))
             fill = b"\xff" * size if self.rng.random() < 0.3 else bytes(self.rng.randrange(256) for _ in range(min(size, 1 << 16))) * (size // (1 << 16) + 1)
@@ -253,7 +268,7 @@ class Estrago:
     def trocar_paginas(self):
         pairs = []
         for _ in range(self.count(2, 40)):
-            a, b = self.rng.randrange(8, self.n_pages), self.rng.randrange(8, self.n_pages)
+            a, b = self.random_page(), self.random_page()
             if a == b:
                 continue
             self.destroy([b], "copia")

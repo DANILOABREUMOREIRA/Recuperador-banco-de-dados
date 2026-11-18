@@ -14,10 +14,11 @@ navegador pelo [Pyodide](https://pyodide.org).
 1. Abra o site.
 2. Clique na área para escolher um **`.zip`**, ou arraste um **`.zip`** ou a pasta **`data`** do MySQL (a que tem o `ibdata1`) para
    ela: arrastar já distingue um do outro. Banco em `.rar`: extraia antes.
-3. Clique em **Recuperar**. O site não pergunta nome nem local: o nome é o da pasta ou do `.zip` (só para o histórico) e o dump fica
-   no disco do navegador (pede espaço livre) enquanto as tabelas são lidas.
-4. Clique em **Baixar restaurador** e escolha onde salvar o `.bat`: só aí o site pede um local. Não há `.sql` nem `.zip` avulsos.
-   Dois cliques no `.bat` criam a pasta `banco de dados recuperado` com `data` e `sql` (veja "O restaurador").
+3. Clique em **Recuperar**. No Chrome e no Edge o site pede onde salvar o `.sql` (ou o `.zip`, com vários bancos) e grava direto no disco,
+   tabela por tabela; nos outros navegadores o dump fica no disco do navegador e baixa no fim (pede espaço livre extra). Não pede nome:
+   o nome é o da pasta ou do `.zip` (só para o histórico).
+4. Opcional: **Baixar restaurador** pede onde salvar o `.exe`. Dois cliques nele criam a pasta `banco de dados recuperado` com `data` e `sql`
+   (veja "O restaurador"). Sem ele, importe o `.sql`: `mysql -uroot -p < banco_recuperado.sql`.
 
 ## Interface
 
@@ -207,34 +208,29 @@ GPL-2.0 (arquivo `LICENSE`). `py/innodb_carver.py` porta a lógica de formato do
 [TwinDB undrop-for-innodb](https://github.com/twindb/undrop-for-innodb), que é GPL-2.0. As bibliotecas em `vendor/`
 mantêm as licenças delas (arquivos `LICENSE` em cada pasta).
 
-## O restaurador (.bat que se extrai sozinho)
-Depois da recuperação, **Baixar restaurador** gera um único arquivo `.bat` que também é um `.zip`: o texto de
-`static/gerar_pasta_data.bat.txt` vai na frente e o `.zip` (os `.sql`, o `restaurar.bat` e um LEIA-ME) vem colado depois
-(`zip-out-worker.js`, parâmetros `prefix` e `raw`; com vários bancos o `.zip` pronto é copiado). O `tar` do Windows 10 (1803+) lê o
-`.zip` por trás do texto. Dois cliques criam, ao lado do arquivo, a pasta **banco de dados recuperado**:
-- `sql\` os `.sql` (um por banco), o `restaurar.bat` (importa num MySQL com senha) e o LEIA-ME;
-- `data\` a pasta data pronta para o MySQL, gerada com o MySQL instalado no computador. Sem MySQL, só a pasta `sql` sai.
+## O restaurador (.exe que faz tudo sozinho)
+Depois da recuperação, **Baixar restaurador** gera um único arquivo `.exe` que também é um `.zip`: o programa `static/restaurar_stub.exe` vai
+na frente e o `.zip` (os `.sql`, o `restaurar.bat` de importação manual e um LEIA-ME) vem colado depois (`zip-out-worker.js`, parâmetros
+`prefix` e `raw`; com vários bancos o `.zip` pronto é copiado). O programa lê o próprio arquivo como `.zip` (o `zipfile` do Python acha o fim
+sozinho, inclusive `.zip64`; por isso o `zip-tail.js`, que corrige posições para o `tar` do `.bat` antigo, não é usado com o `.exe`).
+Dois cliques criam, ao lado do arquivo, a pasta **banco de dados recuperado**:
+- `sql\` os `.sql` (um por banco), o `restaurar.bat` e o LEIA-ME;
+- `data\` a pasta data pronta para o MySQL 5.5; `logs\` e `mysql_temporario_saida.log` com o que o MySQL temporário disse.
 
-Como gera a `data`:
-- acha o `mysqld.exe` pelo serviço do Windows (`reg query`), depois por `Program Files` e pelo PATH;
-- sobe uma cópia **temporária** só por pipe do Windows (`--skip-networking --enable-named-pipe`): sem porta, sem conflito com o
-  MySQL em uso, sem senha (`--skip-grant-tables`, só local); o MySQL instalado não é tocado;
-- cria o esquema `mysql` copiando o do MySQL instalado (ou de `mysql_original\` ao lado do `.bat`, que mantém usuários e senhas do
-  banco original) e, se não houver, pelo roteiro `share\mysql_system_tables*.sql`;
-- lê o `my.ini` (serviço ou `ProgramData`) só para `lower_case_table_names` e `character-set-server`;
-- importa os `.sql`, mostra tabelas, views, gatilhos e chaves estrangeiras, desliga com `innodb_fast_shutdown=0`, espera os
-  arquivos soltarem e apaga `ib_logfile*` (o MySQL do sistema recria no tamanho do `my.ini` dele: evita o erro de log de tamanho diferente);
-- grava `gerar_pasta_data.log` e `mysql_temporario.log` na pasta nova.
+Não precisa de MySQL instalado: o `.exe` leva o MySQL 5.5 do Recuperador de desktop e roda **o mesmo motor** dele
+(`programa/sistema/restaurar_pasta_data.py`: `MySQLInstance`, `clean_import_args` e `_import_sql`, os mesmos do caminho `.sql` do Recuperador).
+- sobe uma cópia **temporária** numa porta livre de `127.0.0.1`, com log do InnoDB de 256 MB e sem doublewrite (importar GBs com os 5 MB
+  padrão era o que deixava lento); o MySQL instalado não é tocado;
+- o esquema `mysql` vem limpo de dentro do `.exe` (ou de `mysql_original\` ao lado dele, que mantém usuários e senhas do banco original);
+- importa cada `.sql`, mostra a contagem de tabelas por banco, desliga com shutdown limpo e apaga `ib_logfile*` (o MySQL do sistema recria
+  no tamanho do `my.ini` dele).
 
-**.zip64 com texto na frente:** as posições do `.zip` contam do início dele; o `tar` corrige isso sozinho no `.zip` comum, mas no `.zip64` (dump
-acima de 2 GB ou vários bancos) dá "Unrecognized archive format". `zip-tail.js` soma o tamanho do texto às posições do fim do `.zip`
-(diretório central e fim do `.zip64`), guardando só o último 1 MB durante a gravação. Testado com um `.zip64` de 376 MB (5 bancos, um de 3,2 GB).
+**Refazer o `static/restaurar_stub.exe`** quando o motor do desktop mudar: `python dev/construir_restaurador.py` (PyInstaller; uns 15 MB).
+O Windows (SmartScreen) avisa que o `.exe` é de editor desconhecido: *Mais informações > Executar assim mesmo*.
 
-**Regra do `.bat`:** nada de `goto` para trás (rótulo acima do `goto`). O `cmd` procura o rótulo seguindo até o fim do arquivo e o
-`.zip` binário que vem depois do último `exit /b` quebra a busca ("não pode localizar o rótulo"). Os laços usam `for /l`.
+Medido no PC de desenvolvimento: `.exe` + `.zip` (um e dois bancos de 30 MB, este também com `.zip64`) geram a pasta `data`, e o MySQL 5.5 sobe nela
+(238 tabelas, 109.540 linhas). Ainda não medido: o tempo de um banco de GBs (`lc_analisesped`, 3,3 GB de `.sql`).
 
 Escolher o banco: clicar na área abre direto a janela de escolher o `.zip`; a pasta `data` entra arrastada (o navegador não tem
 janela que escolha arquivo e pasta juntos).
 
-Medido (MySQL 5.5.38, lc_sistemas, `.sql` de 113 MB, 262.835 linhas, 244 tabelas): 27 s do duplo clique à pasta pronta; a `data`
-sobe com `innodb_log_file_size=71M` e tem as mesmas 262.835 linhas. Não troca a `data` do sistema: isso fica com quem usa.

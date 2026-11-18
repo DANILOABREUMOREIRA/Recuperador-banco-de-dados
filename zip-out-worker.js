@@ -38,12 +38,13 @@ onmessage = async ({ data }) => {
       writable = sink.writable;
     }
     if (prefix) {
-      const text = new TextEncoder().encode(prefix);
+      const text = typeof prefix === 'string' ? new TextEncoder().encode(prefix) : prefix;
       const head = writable.getWriter();
       await head.write(text);
       head.releaseLock();
-      // As posições do .zip contam do início DELE: com o texto na frente o tar só lê o .zip64 se elas forem corrigidas (zip-tail.js).
-      writable = tailPatcher(writable, text.length);
+      // As posições do .zip contam do início DELE: com texto na frente o tar só lê o .zip64 se elas forem corrigidas (zip-tail.js).
+      //   Com um programa (.exe) na frente não se corrige: o zipfile do Python já acha o .zip sozinho e a correção o confundiria.
+      if (typeof prefix === 'string') writable = tailPatcher(writable, text.length);
     }
     if (raw) {                                  // o .zip de vários bancos já está pronto: copia aos pedaços
       const out = writable.getWriter();
