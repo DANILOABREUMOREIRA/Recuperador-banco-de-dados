@@ -7,6 +7,7 @@
 //   navegador (OPFS, pasta dir) e volta como File para a tela baixar.
 // Avisa {progress: {done, total}}, {done: {file}} ou {error}.
 import * as zip from './vendor/zip/zip.min.js';
+import { tailPatcher } from './zip-tail.js';
 
 zip.configure({ useWebWorkers: false });   // este já é um worker
 
@@ -37,9 +38,12 @@ onmessage = async ({ data }) => {
       writable = sink.writable;
     }
     if (prefix) {
+      const text = new TextEncoder().encode(prefix);
       const head = writable.getWriter();
-      await head.write(new TextEncoder().encode(prefix));
+      await head.write(text);
       head.releaseLock();
+      // As posições do .zip contam do início DELE: com o texto na frente o tar só lê o .zip64 se elas forem corrigidas (zip-tail.js).
+      writable = tailPatcher(writable, text.length);
     }
     if (raw) {                                  // o .zip de vários bancos já está pronto: copia aos pedaços
       const out = writable.getWriter();

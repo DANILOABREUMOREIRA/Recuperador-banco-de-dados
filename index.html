@@ -48,7 +48,7 @@
           <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.6"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18"/></svg>
         </button>
         <!-- A VERSÃO do site: sobe a cada publicação, para conferir que a página aberta é a atual. -->
-        <div class="rail-version" title="Versão do site">v1.7.0</div>
+        <div class="rail-version" title="Versão do site">v1.7.2</div>
       </div>
     </nav>
 
@@ -109,7 +109,6 @@
               <button class="btn btn-run" id="btnRun" onclick="startRecovery()" disabled>
                 <div class="fill" id="runFill"></div><span id="runLabel" aria-live="polite">Recuperar</span>
               </button>
-              <button class="btn btn-get" id="btnGet" onclick="onGet()" disabled>Baixar .sql</button>
               <button class="btn btn-get" id="btnZip" onclick="openZipModal()" disabled>Baixar restaurador</button>
             </div>
             <div class="main-note" id="mainNote" role="status" aria-live="polite"></div>
@@ -164,12 +163,11 @@
           </section>
         </section>
 
-        <!-- TELA DOWNLOADS: o dump SQL (quando o navegador o guardou na memória) e o relatório de auditoria. -->
+        <!-- TELA DOWNLOADS: o restaurador (.bat) e o relatório de auditoria. -->
         <section class="view" id="view-downloads">
           <header class="stage-head"><h1>Downloads</h1></header>
           <section class="card">
             <div class="dl-list">
-              <div class="dl-item"><div><span id="dlSqlName">Dump SQL</span><small id="dlSqlInfo"></small></div><button type="button" class="small-btn" id="dlSql" onclick="download('sql')" disabled>Baixar</button></div>
               <div class="dl-item"><div>Restaurador (pasta data + .sql)<small id="dlZipInfo"></small></div><button type="button" class="small-btn" id="dlZip" onclick="openZipModal()" disabled>Baixar .bat</button></div>
               <div class="dl-item"><div>Relatório de auditoria</div><button type="button" class="small-btn" id="dlReport" onclick="download('report')" disabled>Abrir</button></div>
             </div>
@@ -196,36 +194,17 @@
           <section class="card">
             <ol class="how">
               <li><b>Escolha o banco.</b> Pode ser um <code>.zip</code> (clique na área ou arraste) ou a pasta <code>data</code> do MySQL, a que tem o arquivo <code>ibdata1</code> (arraste para a área). O <code>.zip</code> é descompactado aos poucos no disco do navegador e apagado no fim, então não depende da memória. Banco em <code>.rar</code>: extraia antes e escolha a pasta.</li>
-              <li><b>Dê um nome.</b> Ele vira o nome do arquivo <code>.sql</code> e identifica a recuperação no histórico.</li>
-              <li><b>Recupere.</b> No Chrome e no Edge você escolhe onde salvar o <code>.sql</code> e ele é gravado direto no disco, tabela por tabela. Nos outros navegadores o dump é guardado no disco do navegador e baixado no fim, o que pede espaço livre extra.</li>
+              <li><b>Recupere.</b> Clique em Recuperar. O site não pergunta nome nem local: o dump fica no disco do navegador (precisa de espaço livre) enquanto as tabelas são lidas.</li>
               <li><b>Sem servidor MySQL.</b> O Python roda dentro do navegador (Pyodide), lê as páginas do <code>ibdata1</code> e refaz a estrutura pelo dicionário do InnoDB e pelos <code>.frm</code>. Os arquivos não saem do seu computador; só o Pyodide é baixado da internet.</li>
               <li><b>Confira.</b> O relatório mostra cada tabela, os registros lidos, os avisos de registros ilegíveis ou páginas perdidas e o SHA-256 do dump.</li>
-              <li><b>Importe.</b> Num MySQL, rode <code>mysql -uroot -p &lt; banco.sql</code>.</li>
+              <li><b>Baixe o restaurador.</b> Clique em Baixar restaurador e escolha onde salvar o <code>.bat</code>. Dois cliques nele criam a pasta <code>banco de dados recuperado</code>, com a pasta <code>data</code> pronta (se houver MySQL instalado) e os <code>.sql</code>.</li>
             </ol>
-            <div class="note-box">Esta versão gera só o dump <code>.sql</code>. Não gera pasta <code>data</code> nova, não lê tabelas MyISAM, rotinas e eventos, nem tabelas <code>COMPRESSED</code>, e não aceita MySQL 8.0 nem entrada <code>.sql</code>. Devolver a pasta <code>data</code> nova exige um servidor MySQL, que o navegador não tem. Registros apagados há pouco tempo podem reaparecer. Para esses casos use o programa de desktop.</div>
+            <div class="note-box">Não lê tabelas MyISAM, rotinas e eventos, nem tabelas <code>COMPRESSED</code>, e não aceita MySQL 8.0 nem entrada <code>.sql</code>. A pasta <code>data</code> é gerada no computador pelo restaurador, com o MySQL instalado (o navegador não tem servidor MySQL). Registros apagados há pouco tempo podem reaparecer.</div>
           </section>
         </section>
 
       </div>
     </main>
-  </div>
-
-  <!-- O POP-UP CENTRAL: pede o NOME da recuperação ao escolher a pasta. -->
-  <div class="modal-bg" id="modalBg" onclick="if (event.target === this) closeModal()">
-    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" tabindex="-1">
-      <div class="modal-head"><strong id="modalTitle">Nova recuperação</strong><button class="modal-x" onclick="closeModal()" title="Fechar (Esc)" aria-label="Fechar">✕</button></div>
-      <div class="modal-body">
-        <p class="hint">Dê um nome a esta recuperação. Ele vira o nome do arquivo <code>.sql</code> e aparece no histórico.</p>
-        <label class="field-label" for="nameInput">Nome</label>
-        <input type="text" id="nameInput" aria-label="Nome da recuperação" maxlength="80" placeholder="Ex.: Farmácia do João - outubro" onkeydown="if (event.key === 'Enter') confirmName()">
-        <p class="field-info" id="nameInfo"></p>
-        <p class="field-info err" id="nameError" role="alert"></p>
-        <div class="row-end">
-          <button class="small-btn" onclick="cancelName()">Cancelar</button>
-          <button class="small-btn primary" onclick="confirmName()">Continuar</button>
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- AVISO NO CANTO: aparece quando a recuperação (ou o .zip) termina. -->

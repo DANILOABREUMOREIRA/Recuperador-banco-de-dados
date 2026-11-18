@@ -1,14 +1,13 @@
 // Interface do Recuperador de Banco MySQL (versão navegador). É o "cérebro" da tela: guarda a pasta escolhida, liga o
 // Web Worker que roda o Python (worker.js), recebe dele o andamento e redesenha a tela. Mesma interface do programa de
 // desktop, sem o servidor local: nada é enviado para fora do computador.
-// Sequência típica: o usuário solta a pasta -> useFolder -> askName -> confirmName -> startRecovery -> runRecovery ->
+// Sequência típica: o usuário solta a pasta -> useFolder -> acceptPicked -> startRecovery -> runRecovery ->
 // mensagens do worker (phase, planned, tableStart, pages, table, done) até COMPLETED.
 
 // ESTADO DA TELA. picked = a pasta data escolhida {name, files, size, ibdata, copies}; last = o que a tela mostra do
 //   andamento; logs = todas as linhas do log; worker = o Web Worker em curso.
 let picked = null;
 let projectName = '';
-let nameOpen = false;
 let worker = null;
 let startedAt = 0;
 let timer = null;
@@ -69,28 +68,8 @@ function showView(name) {
   setSide(saved === null ? window.innerWidth > 900 : saved === '1');
 })();
 
-// ---------- pop-up central (o nome da recuperação) ----------
-let focusBeforeModal = null;
-function openModal() {
-  if (!$('modalBg').classList.contains('open')) focusBeforeModal = document.activeElement;
-  $('modalBg').classList.add('open');
-  setTimeout(() => { if ($('modalBg').classList.contains('open') && !$('modal').contains(document.activeElement)) $('modal').focus(); }, 0);
-}
-function closeModal() {
-  if (nameOpen) { cancelName(); return; }  // fechar o pedido de nome = desistir da escolha
-  $('modalBg').classList.remove('open');
-  if (focusBeforeModal && document.contains(focusBeforeModal)) focusBeforeModal.focus();
-  focusBeforeModal = null;
-}
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { if ($('zipBg').classList.contains('open')) closeZipModal(); else closeModal(); return; }
-  if (e.key !== 'Tab' || !$('modalBg').classList.contains('open')) return;
-  const focusable = [...$('modal').querySelectorAll('button:not([disabled]), input, textarea, [tabindex]:not([tabindex="-1"])')]
-    .filter(el => el.offsetParent !== null);
-  if (!focusable.length) return;
-  const firstEl = focusable[0], lastEl = focusable[focusable.length - 1];
-  if (e.shiftKey && (document.activeElement === firstEl || document.activeElement === $('modal'))) { e.preventDefault(); lastEl.focus(); }
-  else if (!e.shiftKey && document.activeElement === lastEl) { e.preventDefault(); firstEl.focus(); }
+  if (e.key === 'Escape' && $('zipBg').classList.contains('open')) closeZipModal();
 });
 
 // ---------- escolher o banco: .zip ou a pasta data ----------
@@ -119,9 +98,7 @@ async function useFolder(name, list) {
   const chosen = selectData(list.map(f => ({ path: f.path, size: f.file.size, file: f.file })));
   if (!chosen) { note('A pasta não tem o arquivo ibdata1: não parece uma pasta data do MySQL.', true); return; }
   picked = { kind: 'folder', name, files: chosen.items.map(i => ({ name: i.name, data: i.file })), ibdata: chosen.ibdata.file, size: chosen.size };
-  projectName = '';
-  note(chosen.copies > 1 ? 'Havia mais de um ibdata1 na pasta: usei o maior.' : '');
-  askName(name);
+  acceptPicked(name, chosen.copies > 1 ? 'Havia mais de um ibdata1 na pasta: usei o maior.' : '');
 }
 // Um .zip, por clique ou arrastado. O .rar não entra: o formato obriga a ler o arquivo inteiro na memória.
 const ARCHIVE = /\.zip$/i;
@@ -132,9 +109,7 @@ function pickFile(files) {
   if (/\.rar$/i.test(file.name)) { note('O .rar não é lido aqui: extraia-o e escolha a pasta data, ou use o programa de desktop.', true); return; }
   if (!ARCHIVE.test(file.name)) { note('Formato não suportado. Use .zip ou a pasta data.', true); return; }
   picked = { kind: 'archive', name: file.name.replace(ARCHIVE, ''), file, size: file.size };
-  projectName = '';
-  note('');
-  askName(picked.name);
+  acceptPicked(picked.name);
 }
 // Pasta ARRASTADA: a API de arquivos do navegador entrega os itens em lotes; lê recursivamente.
 function readDirectory(entry, prefix) {
@@ -169,36 +144,18 @@ async function pickFolderEntry(entry) {
   ['dragover', 'drop'].forEach(ev => window.addEventListener(ev, e => e.preventDefault()));
 })();
 
-// ---------- nome da recuperação ----------
-function askName(suggestion) {
-  nameOpen = true;
-  $('nameInput').value = projectName || suggestion;
-  $('nameError').textContent = '';
+// ---------- o banco escolhido ----------
+// Não pergunta nome nem local: o nome é o da pasta ou do .zip (só serve para o histórico e para o nome sugerido do restaurador);
+// o local só é escolhido ao baixar o restaurador. extra = aviso a mostrar (várias cópias do ibdata1).
+function acceptPicked(suggestion, extra) {
+  projectName = fileSafe(suggestion);
   // Com o .zip, o site primeiro descompacta tudo no disco do navegador (de 3% a 15% do tempo e o tamanho do banco em espaço); com a
   //   pasta data a leitura é direta. Por isso o aviso sugere a pasta.
-  $('nameInfo').textContent = picked.kind === 'archive'
-    ? `Arquivo ${picked.file.name}: ${fmtSize(picked.size)}. Dica: extraia o .zip e escolha a pasta data; fica mais rápido e não ocupa o disco do navegador.`
-    : `Pasta ${picked.name}: ${picked.files.length} arquivos, ibdata1 de ${fmtSize(picked.ibdata.size)}.`;
-  openModal();
-  setTimeout(() => { $('nameInput').focus(); $('nameInput').select(); }, 50);
-}
-function confirmName() {
-  const value = $('nameInput').value.trim();
-  if (!value) { $('nameInput').focus(); return; }
-  projectName = value;
-  nameOpen = false;
-  askNotifyPermission();   // o clique em Continuar é o gesto que o navegador exige para perguntar
+  note(picked.kind === 'archive'
+    ? 'Dica: extraia o .zip e arraste a pasta data para cá; fica mais rápido e não ocupa o disco do navegador.' : (extra || ''));
   showSource(projectName, (picked.kind === 'archive' ? picked.file.name : 'pasta ' + picked.name) + ' · ' + fmtSize(picked.size), true);
-  closeModal();
   // Escolher outra pasta começa do zero: some o resultado anterior e o Baixar volta a ficar bloqueado.
-  if (last.state !== 'IDLE') { last = freshState(); logs = []; note(''); draw(); }
-  refreshButtons();
-}
-function cancelName() {
-  nameOpen = false;
-  picked = null; projectName = '';
-  showSource(EMPTY_TITLE, EMPTY_SUB, false);
-  closeModal();
+  if (last.state !== 'IDLE') { last = freshState(); logs = []; draw(); }
   refreshButtons();
 }
 
@@ -211,13 +168,7 @@ function refreshButtons() {
   // Pronta a recuperação, o Recuperar some: o Baixar .sql ocupa o lugar dele e o Baixar .zip fica à direita.
   $('btnRun').hidden = done;
   // Com vários bancos o resultado já é um .zip (um .sql por banco): não há .sql avulso nem segundo .zip.
-  const multi = done && !!last.multi;
   $('btnZip').hidden = !done;
-  $('btnGet').disabled = !(done && last.blob);
-  $('btnGet').textContent = done && last.mode === 'disk' ? 'Salvo no disco' : multi ? 'Baixar .zip' : 'Baixar .sql';
-  $('dlSql').disabled = !(done && last.blob);
-  $('dlSqlName').textContent = multi ? 'Dumps SQL de todos os bancos (.zip)' : 'Dump SQL';
-  $('dlSqlInfo').textContent = done && last.mode === 'disk' ? 'Gravado direto no disco: ' + last.savedName : '';
   $('dlReport').disabled = !(done && last.report);
   const zipOk = done && !!(last.blob || last.handle) && !zipWorker;
   $('btnZip').disabled = !zipOk;
@@ -230,45 +181,12 @@ function setRunLabel() {
 // ---------- recuperação ----------
 const fileSafe = name => name.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '') || 'banco_recuperado';
 
-// FAZ: o clique em Recuperar. No Chrome e no Edge pergunta primeiro onde salvar o .sql (precisa ser logo no clique).
-// Os bancos de usuário de uma lista de caminhos: a pasta pai de cada .frm (fora os bancos do sistema). Igual ao Python.
-const SYSTEM_DBS = new Set(['mysql', 'performance_schema', 'information_schema']);
-function databasesIn(paths) {
-  const found = new Set();
-  for (const path of paths) {
-    const m = /(?:^|\/)([^/]+)\/[^/]+\.frm$/i.exec(path);
-    if (m && !SYSTEM_DBS.has(m[1].toLowerCase())) found.add(m[1]);
-  }
-  return found;
-}
-// Quantos bancos a recuperação vai ter (vários bancos saem num .zip, um só sai num .sql). No .zip lê só o índice dele.
-async function countDatabases() {
-  if (picked.kind !== 'archive') return databasesIn(picked.files.map(f => f.name)).size;
-  try {
-    const zip = await import('../vendor/zip/zip.min.js');
-    zip.configure({ useWebWorkers: false });
-    const reader = new zip.ZipReader(new zip.BlobReader(picked.file));
-    const entries = await reader.getEntries();
-    await reader.close();
-    return databasesIn(entries.map(e => e.filename)).size;
-  } catch (e) { return 1; }
-}
-async function startRecovery() {
+// FAZ: o clique em Recuperar. Não pergunta onde salvar: o dump fica no disco do navegador e o local só é escolhido ao baixar o restaurador.
+function startRecovery() {
   if (running() || !picked || !projectName) return;
-  let handle = null;
-  const many = (await countDatabases()) > 1;
-  if (CAN_STREAM) {
-    try {
-      handle = await window.showSaveFilePicker(many
-        ? { suggestedName: fileSafe(projectName) + '.zip', types: [{ description: 'Arquivo ZIP', accept: { 'application/zip': ['.zip'] } }] }
-        : { suggestedName: fileSafe(projectName) + '.sql', types: [{ description: 'Dump SQL', accept: { 'application/sql': ['.sql'] } }] });
-    } catch (error) {
-      if (error.name !== 'AbortError') note('Não foi possível escolher o local do arquivo: ' + error.message, true);
-      return;
-    }
-  }
+  askNotifyPermission();   // o clique em Recuperar é o gesto que o navegador exige para perguntar
   note('');
-  runRecovery(picked.kind === 'archive' ? { archive: picked.file } : { files: picked.files }, handle, projectName);
+  runRecovery(picked.kind === 'archive' ? { archive: picked.file } : { files: picked.files }, null, projectName);
 }
 
 // AS ETAPAS (a estante e a dica): nome, descrição e a porcentagem em que cada uma começa.
@@ -602,7 +520,6 @@ function notify(title, body, isErr) {
 }
 
 // ---------- baixar e relatório ----------
-function onGet() { download('sql'); }
 function saveBlob(blob, name) {
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);

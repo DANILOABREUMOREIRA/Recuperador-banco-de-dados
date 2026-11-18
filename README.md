@@ -12,11 +12,12 @@ navegador pelo [Pyodide](https://pyodide.org).
 ## Como usar
 
 1. Abra o site.
-2. Solte na tela, ou clique para escolher, um **`.zip`** ou a pasta **`data`** do MySQL (a que tem o `ibdata1`). A
-   pasta também pode ser escolhida pelo link *ou escolher a pasta data*. Banco em `.rar`: extraia antes.
-3. Dê um nome e clique em **Recuperar**. No Chrome e no Edge você escolhe onde salvar o `.sql` e ele é gravado direto no
-   disco. Nos outros navegadores o dump é guardado no disco do navegador e baixado no fim (pede espaço livre extra).
-4. Importe o `.sql` num MySQL: `mysql -uroot -p < banco_recuperado.sql`
+2. Clique na área para escolher um **`.zip`**, ou arraste um **`.zip`** ou a pasta **`data`** do MySQL (a que tem o `ibdata1`) para
+   ela: arrastar já distingue um do outro. Banco em `.rar`: extraia antes.
+3. Clique em **Recuperar**. O site não pergunta nome nem local: o nome é o da pasta ou do `.zip` (só para o histórico) e o dump fica
+   no disco do navegador (pede espaço livre) enquanto as tabelas são lidas.
+4. Clique em **Baixar restaurador** e escolha onde salvar o `.bat`: só aí o site pede um local. Não há `.sql` nem `.zip` avulsos.
+   Dois cliques no `.bat` criam a pasta `banco de dados recuperado` com `data` e `sql` (veja "O restaurador").
 
 ## Interface
 
@@ -136,7 +137,7 @@ sem comando de build e sem pasta de saída. No GitHub Pages: publique a raiz do 
 ```
 index.html            tela: a mesma interface do programa de desktop (3 colunas, estante de livros, duas barras)
 static/app.css        visual, com modo claro e modo escuro (variáveis de cor em :root e :root[data-theme="dark"])
-static/app.js         lógica da tela: banco, nome, andamento, tabelas, histórico (neste navegador), relatório
+static/app.js         lógica da tela: banco, andamento, tabelas, histórico (neste navegador), relatório
 static/select.js      escolhe quais arquivos entram (acha o ibdata1, filtra logs e caminhos suspeitos)
 static/extract.js     descompacta o .zip e limpa o disco do navegador depois
 static/theme-init.js  escolhe o tema antes de a página aparecer (o gravado, ou o do sistema)
@@ -224,6 +225,10 @@ Como gera a `data`:
 - importa os `.sql`, mostra tabelas, views, gatilhos e chaves estrangeiras, desliga com `innodb_fast_shutdown=0`, espera os
   arquivos soltarem e apaga `ib_logfile*` (o MySQL do sistema recria no tamanho do `my.ini` dele: evita o erro de log de tamanho diferente);
 - grava `gerar_pasta_data.log` e `mysql_temporario.log` na pasta nova.
+
+**.zip64 com texto na frente:** as posições do `.zip` contam do início dele; o `tar` corrige isso sozinho no `.zip` comum, mas no `.zip64` (dump
+acima de 2 GB ou vários bancos) dá "Unrecognized archive format". `zip-tail.js` soma o tamanho do texto às posições do fim do `.zip`
+(diretório central e fim do `.zip64`), guardando só o último 1 MB durante a gravação. Testado com um `.zip64` de 376 MB (5 bancos, um de 3,2 GB).
 
 **Regra do `.bat`:** nada de `goto` para trás (rótulo acima do `goto`). O `cmd` procura o rótulo seguindo até o fim do arquivo e o
 `.zip` binário que vem depois do último `exit /b` quebra a busca ("não pode localizar o rótulo"). Os laços usam `for /l`.
