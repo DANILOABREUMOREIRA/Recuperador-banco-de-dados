@@ -216,7 +216,6 @@ async function startRecovery() {
   const many = (await countDatabases()) > 1;
   // Formato rápido (LOAD DATA): o resultado é sempre um .zip, mesmo com um banco só.
   const fast = $('fastFormat').checked;
-  try { localStorage.setItem('rm-fast', fast ? '1' : '0'); } catch (e) { /* sem armazenamento: vale só nesta página */ }
   if (CAN_STREAM) {
     try {
       handle = await window.showSaveFilePicker(many || fast
@@ -1036,7 +1035,6 @@ if (typeof Worker === 'undefined' || typeof WebAssembly === 'undefined') {
   note('Este navegador não roda o Python (precisa de Web Worker e WebAssembly). Use o Chrome, o Edge ou o Firefox atualizados.', true);
 }
 draw();
-try { if (localStorage.getItem('rm-fast') === '0') $('fastFormat').checked = false; } catch (e) { /* sem armazenamento: fica marcado */ }
 
 // Ao abrir: apaga o que uma execução anterior deixou no disco do navegador (fechada no meio da descompactação).
 import('./extract.js').then(m => m.cleanupLeftovers()).catch(() => {});

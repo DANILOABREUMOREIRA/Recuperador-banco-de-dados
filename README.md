@@ -133,8 +133,8 @@ Limitação do método: registros apagados há pouco tempo podem reaparecer (pá
 Site estático, sem build. Na Vercel: **Add New > Project**, importe este repositório, *Framework Preset* **Other**,
 sem comando de build e sem pasta de saída. No GitHub Pages: publique a raiz do repositório.
 
-## O formato rápido (v1.8.2)
-Com a caixa **Formato rápido de importação (LOAD DATA)** marcada (é o padrão), a recuperação entrega sempre um **`.zip`**, mesmo com um banco só, e
+## O formato rápido (v1.8.2, opcional desde a v1.8.3)
+Com a caixa **Formato rápido de importação (LOAD DATA)** marcada (vem desmarcada), a recuperação entrega sempre um **`.zip`**, mesmo com um banco só, e
 em vez de um `.sql` cheio de `INSERT` ele leva, por banco: `estrutura.sql` (DROP + CREATE TABLE sem os índices secundários), `dados/*.txt` (as linhas,
 no mesmo texto de um `INSERT`: `(1,'abc',NULL)`), `carregar.sql` (um `LOAD DATA LOCAL INFILE` por arquivo), `indices.sql` (os índices, criados com os
 dados já dentro), `objetos.sql` (chaves estrangeiras, views e triggers) e `conferir.sql` (conta as linhas de cada tabela e mostra OK ou DIVERGENTE),
@@ -151,7 +151,7 @@ milhões de linhas, e um teste de valores difíceis). O que o `LOAD DATA` não e
 lido para uma variável e convertido no `SET` do comando (`py/load_format.py`). O `float` `-0.0` sai preservado (o `INSERT` perdia o sinal).
 
 Limites: precisa de `local_infile` ligado no servidor (o padrão do 5.5; o LEIA-ME explica o erro 1148); o `estrutura.sql` apaga as tabelas de mesmo nome.
-Desmarcar a caixa volta ao `.sql` com `INSERT` (e **Baixar .zip** com o `.sql`, como na v1.8.1). Para testar no navegador local:
+Sem a caixa (o padrão) sai o `.sql` com `INSERT` (e **Baixar .zip** com o `.sql`, como na v1.8.1). Para testar no navegador local:
 `?auto=1&fmt=load&save=1` (o servidor de teste guarda o `.zip` em `dev/saida_teste/`).
 
 ### Leitura em blocos de 1 MB (v1.8.2)
