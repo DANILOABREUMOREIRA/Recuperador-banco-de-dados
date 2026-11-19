@@ -582,7 +582,7 @@ function onGet() { download('sql'); }
 function openReport() { download('report'); }
 
 // ---------- baixar o dump compactado (.zip) ----------
-// O .zip leva o .sql, um restaurar.bat e um LEIA-ME. É montado em fluxo (zip-out-worker.js): o tamanho do dump não é
+// O .zip leva o .sql e um LEIA-ME. É montado em fluxo (zip-out-worker.js): o tamanho do dump não é
 // limitado pela memória. No Chrome e no Edge grava direto no arquivo escolhido; nos outros passa pelo disco do navegador.
 let zipWorker = null, zipDir = null, zipSeq = 0;
 // Velocidade da compactação (MB/s): a de um computador comum (rápida) e a de um lento. Só serve para estimar o tempo.
@@ -642,11 +642,11 @@ function zipTexts() {
   const readme = [
     'RECUPERAÇÃO DO BANCO ' + (report.banco || last.projectName),
     '',
-    'Esta pasta tem o dump SQL recuperado (' + sql + '), este LEIA-ME e o restaurar.bat.',
+    'Esta pasta tem o dump SQL recuperado (' + sql + ') e este LEIA-ME.',
     '',
-    'COMO RESTAURAR (precisa do MySQL ou MariaDB instalado):',
-    '  1. Dê dois cliques em restaurar.bat e informe a senha do MySQL quando ele pedir.',
-    '     Ou, num terminal:  mysql -u root -p < "' + sql + '"',
+    'COMO RESTAURAR (precisa do MySQL ou MariaDB):',
+    '  Abra ' + sql + ' no Query Browser (ou no cliente MySQL que preferir) e execute o arquivo inteiro.',
+    '  Ou, num terminal:  mysql -u root -p < "' + sql + '"',
     '  O dump cria o banco "' + (report.banco || '') + '" e as tabelas, e insere os registros.',
     '',
     'CONFERÊNCIA:',
@@ -657,22 +657,7 @@ function zipTexts() {
     'Gerado pelo Recuperador de Banco MySQL (versão navegador) em ' + new Date().toLocaleString('pt-BR') + '.',
     '',
   ].join('\r\n');
-  const bat = [
-    '@echo off',
-    'chcp 65001 > nul',
-    'echo Restaurando o dump no MySQL. Precisa do MySQL instalado e do comando mysql no PATH.',
-    'set /p MYSQL_USER=Usuario do MySQL [root]: ',
-    'if "%MYSQL_USER%"=="" set MYSQL_USER=root',
-    'for %%f in ("%~dp0*.sql") do (',
-    '  echo Importando %%~nxf ...',
-    '  mysql -u %MYSQL_USER% -p < "%%f"',
-    ')',
-    'echo.',
-    'echo Fim. Se nao houve mensagem de erro acima, o banco foi restaurado.',
-    'pause',
-    '',
-  ].join('\r\n');
-  return [{ name: 'LEIA-ME.txt', text: readme }, { name: 'restaurar.bat', text: bat }];
+  return [{ name: 'LEIA-ME.txt', text: readme }];
 }
 async function startZip() {
   if (zipWorker) return;

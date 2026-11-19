@@ -151,12 +151,10 @@ async function recoverMany(pyodide, data, databases, load) {
 
   const reports = {};
   let counter = 0;
-  const dirs = [];
   for (const plan of plans) {
     const { db, recovery } = plan;
     if (load) {
       counter = await writeFast(zip, writer, plan, labels, counter);
-      dirs.push(safeName(db));
       reports[db] = JSON.parse(recovery.report());
       postMessage({ log: `${db}: ${reports[db].registros.toLocaleString("pt-BR")} registros em ${Object.keys(reports[db].tabelas).length} tabelas.` });
       continue;
@@ -188,7 +186,7 @@ async function recoverMany(pyodide, data, databases, load) {
 
   postMessage({ phase: "objects" });
   const report = combine(reports, (Date.now() - started) / 1000);
-  for (const extra of load ? fastExtras(reports, dirs) : extras(reports)) await writer.add(extra.name, new zip.TextReader(extra.text));
+  for (const extra of load ? fastExtras(reports) : extras(reports)) await writer.add(extra.name, new zip.TextReader(extra.text));
   postMessage({ phase: "close" });
   await writer.close();
   pyodide.runPython("carver.close()");
@@ -245,8 +243,8 @@ async function writeFast(zip, writer, plan, labels, counter) {
   return counter;
 }
 
-// LEIA-ME, restaurar.sql e restaurar.bat do .zip no formato rápido.
-function fastExtras(reports, dirs) {
+// LEIA-ME do .zip no formato rápido.
+function fastExtras(reports) {
   const lines = Object.entries(reports).map(([db, r]) => `  ${db}: ${Object.keys(r.tabelas).length} tabelas, ${r.registros} registros`);
   const readme = [
     "RECUPERAÇÃO DOS BANCOS DA PASTA DATA (formato rápido)",
@@ -254,17 +252,19 @@ function fastExtras(reports, dirs) {
     "Este .zip não traz um .sql com INSERTs: traz as linhas em arquivos de texto (pasta dados de cada banco) que o MySQL carrega com LOAD DATA,",
     "o que é mais rápido, e os índices secundários são criados no fim, com os dados já dentro.",
     "",
-    "COMO RESTAURAR (precisa do MySQL ou MariaDB ligado e do comando mysql no PATH):",
+    "COMO RESTAURAR (precisa do MySQL ou MariaDB):",
     "  1. Extraia o .zip numa pasta (não rode de dentro do .zip).",
-    "  2. Dê dois cliques em restaurar.bat, informe o usuário e a senha do MySQL quando ele pedir.",
-    "     Ou, num terminal, dentro da pasta extraída:  mysql -u root -p --local-infile=1 < restaurar.sql",
+    "  2. Para cada banco (cada pasta com o nome dele), execute estes arquivos NESTA ORDEM:",
+    "       estrutura.sql  apaga (DROP TABLE) e recria as tabelas, sem os índices secundários.",
+    "       carregar.sql   carrega as linhas de dados/*.txt (LOAD DATA LOCAL INFILE).",
+    "       indices.sql    cria os índices secundários.",
+    "       objetos.sql    chaves estrangeiras, views e triggers.",
+    "       conferir.sql   conta as linhas de cada tabela e mostra OK ou DIVERGENTE.",
     "",
-    "O QUE ELE FAZ, banco por banco (os comandos estão em restaurar.sql):",
-    "  estrutura.sql  apaga (DROP TABLE) e recria as tabelas, sem os índices secundários.",
-    "  carregar.sql   carrega as linhas de dados/*.txt (LOAD DATA LOCAL INFILE).",
-    "  indices.sql    cria os índices secundários.",
-    "  objetos.sql    chaves estrangeiras, views e triggers.",
-    "  conferir.sql   conta as linhas de cada tabela e mostra OK ou DIVERGENTE.",
+    "O carregar.sql lê os arquivos por caminhos relativos à pasta extraída (banco/dados/...). O cliente precisa estar com essa pasta como pasta atual",
+    "e com o local_infile ligado. Num terminal, dentro da pasta extraída:",
+    "  mysql -u root -p --local-infile=1 --default-character-set=utf8 < banco\\carregar.sql",
+    "Se o seu programa não achar os arquivos de dados, use o formato comum (um .sql com INSERTs), que roda em qualquer cliente.",
     "",
     "ATENÇÃO: o estrutura.sql apaga as tabelas de mesmo nome que já existam nesses bancos. Faça isso num MySQL de teste ou sem dados que importem.",
     "",
@@ -280,17 +280,7 @@ function fastExtras(reports, dirs) {
     "Gerado pelo Recuperador de Banco MySQL (versão navegador) em " + new Date().toLocaleString("pt-BR") + ".",
     "",
   ].join("\r\n");
-  const sql = dirs.flatMap((dir) => ["estrutura", "carregar", "indices", "objetos", "conferir"].map((part) => `SOURCE ${dir}/${part}.sql;`)).join("\n") + "\n";
-  const bat = [
-    "@echo off", "chcp 65001 > nul", 'cd /d "%~dp0"',
-    "echo Restaurando os bancos no MySQL. Precisa do MySQL ligado e do comando mysql no PATH.",
-    "set /p MYSQL_USER=Usuario do MySQL [root]: ",
-    'if "%MYSQL_USER%"=="" set MYSQL_USER=root',
-    "echo Informe a senha do MySQL quando ele pedir. O que importar aparece abaixo; no fim vem a conferencia das linhas.",
-    "mysql -u %MYSQL_USER% -p --local-infile=1 --default-character-set=utf8 --max_allowed_packet=64M -t < restaurar.sql",
-    "echo.", "echo Fim. Se nao houve mensagem de erro acima, confira que nenhuma linha da conferencia diz DIVERGENTE.", "pause", "",
-  ].join("\r\n");
-  return [{ name: "LEIA-ME.txt", text: readme }, { name: "restaurar.sql", text: sql }, { name: "restaurar.bat", text: bat }];
+  return [{ name: "LEIA-ME.txt", text: readme }];
 }
 
 // Junta os relatórios dos bancos num só (a tela lê este formato).
@@ -309,18 +299,17 @@ function combine(reports, seconds) {
   return total;
 }
 
-// LEIA-ME e restaurar.bat do .zip com vários bancos.
+// LEIA-ME do .zip com vários bancos.
 function extras(reports) {
   const lines = Object.entries(reports).map(([db, r]) => `  ${db}.sql: ${Object.keys(r.tabelas).length} tabelas, ${r.registros} registros, SHA-256 ${r.sha256}`);
   const readme = [
     "RECUPERAÇÃO DOS BANCOS DA PASTA DATA",
     "",
-    "Este .zip tem um dump SQL por banco, este LEIA-ME e o restaurar.bat.",
+    "Este .zip tem um dump SQL por banco e este LEIA-ME.",
     "",
-    "COMO RESTAURAR (precisa do MySQL ou MariaDB instalado):",
-    "  1. Extraia o .zip numa pasta.",
-    "  2. Dê dois cliques em restaurar.bat e informe a senha do MySQL quando ele pedir (importa todos os .sql da pasta).",
-    "     Ou, num terminal, um banco por vez:  mysql -u root -p < banco.sql",
+    "COMO RESTAURAR (precisa do MySQL ou MariaDB):",
+    "  Abra cada .sql no Query Browser (ou no cliente MySQL que preferir) e execute o arquivo inteiro, um banco por vez.",
+    "  Ou, num terminal:  mysql -u root -p < banco.sql",
     "",
     "CONFERÊNCIA:",
     ...lines,
@@ -328,13 +317,5 @@ function extras(reports) {
     "Gerado pelo Recuperador de Banco MySQL (versão navegador) em " + new Date().toLocaleString("pt-BR") + ".",
     "",
   ].join("\r\n");
-  const bat = [
-    "@echo off", "chcp 65001 > nul",
-    "echo Restaurando os dumps no MySQL. Precisa do MySQL instalado e do comando mysql no PATH.",
-    "set /p MYSQL_USER=Usuario do MySQL [root]: ",
-    'if "%MYSQL_USER%"=="" set MYSQL_USER=root',
-    'for %%f in ("%~dp0*.sql") do (', "  echo Importando %%~nxf ...", '  mysql -u %MYSQL_USER% -p < "%%f"', ")",
-    "echo.", "echo Fim. Se nao houve mensagem de erro acima, os bancos foram restaurados.", "pause", "",
-  ].join("\r\n");
-  return [{ name: "LEIA-ME.txt", text: readme }, { name: "restaurar.bat", text: bat }];
+  return [{ name: "LEIA-ME.txt", text: readme }];
 }

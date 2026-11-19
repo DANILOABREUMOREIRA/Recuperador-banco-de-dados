@@ -48,7 +48,7 @@
           <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.6"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18"/></svg>
         </button>
         <!-- A VERSÃO do site: sobe a cada publicação, para conferir que a página aberta é a atual. -->
-        <div class="rail-version" title="Versão do site">v1.8.5</div>
+        <div class="rail-version" title="Versão do site">v1.8.6</div>
       </div>
     </nav>
 
@@ -203,7 +203,7 @@
               <li><b>Recupere.</b> Clique em Recuperar. No Chrome e no Edge você escolhe onde salvar o <code>.sql</code> (ou o <code>.zip</code>, com vários bancos) e ele é gravado direto no disco, tabela por tabela. Nos outros navegadores o dump é guardado no disco do navegador e baixado no fim, o que pede espaço livre extra.</li>
               <li><b>Sem servidor MySQL.</b> O Python roda dentro do navegador (Pyodide), lê as páginas do <code>ibdata1</code> e refaz a estrutura pelo dicionário do InnoDB e pelos <code>.frm</code>. Os arquivos não saem do seu computador; só o Pyodide é baixado da internet.</li>
               <li><b>Confira.</b> O relatório mostra cada tabela, os registros lidos, os avisos de registros ilegíveis ou páginas perdidas e o SHA-256 do dump.</li>
-              <li><b>Baixe o .zip (opcional).</b> Clique em Baixar .zip e escolha onde salvar. Ele leva o <code>.sql</code>, um <code>restaurar.bat</code> que o importa num MySQL instalado e um LEIA-ME. Sem ele, importe o <code>.sql</code> num MySQL: <code>mysql -uroot -p &lt; banco.sql</code>.</li>
+              <li><b>Baixe o .zip (opcional).</b> Clique em Baixar .zip e escolha onde salvar. Ele leva o <code>.sql</code> e um LEIA-ME. Sem ele, importe o <code>.sql</code> no Query Browser ou num MySQL: <code>mysql -uroot -p &lt; banco.sql</code>.</li>
             </ol>
             <div class="note-box">Não lê tabelas MyISAM, rotinas e eventos, nem tabelas <code>COMPRESSED</code>, e não aceita MySQL 8.0 nem entrada <code>.sql</code>. O site não gera a pasta <code>data</code> (o navegador não tem servidor MySQL): para ela, use o Recuperador de desktop com o <code>.sql</code>. Registros apagados há pouco tempo podem reaparecer.</div>
           </section>

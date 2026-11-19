@@ -17,7 +17,7 @@ navegador pelo [Pyodide](https://pyodide.org).
 3. Clique em **Recuperar**. No Chrome e no Edge o site pede onde salvar o `.sql` (ou o `.zip`, com vários bancos) e grava direto no disco,
    tabela por tabela; nos outros navegadores o dump fica no disco do navegador e baixa no fim (pede espaço livre extra). Não pede nome:
    o nome é o da pasta ou do `.zip` (só para o histórico).
-4. Opcional: **Baixar .zip** pede onde salvar um `.zip` com o `.sql`, um `restaurar.bat` e um LEIA-ME (veja "O .zip com os .sql").
+4. Opcional: **Baixar .zip** pede onde salvar um `.zip` com o `.sql` e um LEIA-ME (veja "O .zip com os .sql").
    Sem ele, importe o `.sql`: `mysql -uroot -p < banco_recuperado.sql`.
 
 ## Interface
@@ -138,7 +138,8 @@ Com a caixa **Formato rápido de importação (LOAD DATA)** marcada (vem desmarc
 em vez de um `.sql` cheio de `INSERT` ele leva, por banco: `estrutura.sql` (DROP + CREATE TABLE sem os índices secundários), `dados/*.txt` (as linhas,
 no mesmo texto de um `INSERT`: `(1,'abc',NULL)`), `carregar.sql` (um `LOAD DATA LOCAL INFILE` por arquivo), `indices.sql` (os índices, criados com os
 dados já dentro), `objetos.sql` (chaves estrangeiras, views e triggers) e `conferir.sql` (conta as linhas de cada tabela e mostra OK ou DIVERGENTE),
-mais `restaurar.sql`, `restaurar.bat` e o LEIA-ME na raiz. O cliente extrai o `.zip` e dá dois cliques em `restaurar.bat`.
+mais o LEIA-ME na raiz. O cliente extrai o `.zip` e executa, banco por banco, `estrutura.sql`, `carregar.sql`, `indices.sql`, `objetos.sql` e `conferir.sql`, nessa ordem
+(o LEIA-ME explica). Não há `.bat` nem `restaurar.sql`: a restauração é feita no Query Browser ou no cliente `mysql`.
 
 Por que é mais rápido: o `LOAD DATA` não tem o custo de interpretar cada `INSERT`, e criar os índices no fim é mais rápido que atualizá-los a cada
 linha. Medido num banco de 2,6 milhões de linhas (320 MB de `.sql`, MySQL 5.5 com a configuração padrão): `INSERT` 87 s, `LOAD DATA` + índices no fim
@@ -239,8 +240,7 @@ GPL-2.0 (arquivo `LICENSE`). `py/innodb_carver.py` porta a lógica de formato do
 mantêm as licenças delas (arquivos `LICENSE` em cada pasta).
 
 ## O .zip com os .sql
-Depois da recuperação, **Baixar .zip** gera (aos pedaços, `zip-out-worker.js`) um `.zip` com o `.sql`, um `restaurar.bat` que o importa num MySQL
-instalado (pede a senha) e um LEIA-ME; com vários bancos o `.zip` pronto é copiado. **O site não gera a pasta `data`**: o navegador não tem
+Depois da recuperação, **Baixar .zip** gera (aos pedaços, `zip-out-worker.js`) um `.zip` com o `.sql` e um LEIA-ME (sem `.bat`: o `.sql` se importa no Query Browser ou no cliente `mysql`); com vários bancos o `.zip` pronto é copiado. **O site não gera a pasta `data`**: o navegador não tem
 servidor MySQL e não existe MySQL 5.5 com InnoDB para WebAssembly. Para a pasta `data`, use o Recuperador de desktop (`programa/`) com o `.sql`:
 ele importa num MySQL 5.5 temporário e entrega a `data` em `.zip`/`.rar`.
 
