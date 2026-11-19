@@ -427,6 +427,9 @@ def parse_compact(page, origin, fields, read_external):
     # Só registros 'ordinários' interessam (não nós internos da árvore).
     if page[origin - 3] & 0x07 != REC_STATUS_ORDINARY:
         return None
+    # Número de heap 0 e 1 são do infimum/supremum: um registro de dados com eles é lixo (ex.: bytes zerados de página danificada).
+    if u16(page, origin - 4) >> 3 < 2:
+        raise CarverError("número de heap inválido")
     # O bit 0x20 do cabeçalho marca registro apagado.
     deleted = bool(page[origin - 5] & REC_INFO_DELETED_FLAG)
     # Antes da origem, para trás: primeiro o bitmap de NULL (1 bit por coluna que aceita NULL), depois os tamanhos das
@@ -470,6 +473,8 @@ def parse_compact(page, origin, fields, read_external):
 def parse_redundant(page, origin, fields, read_external):
     """rec_init_offsets() formato antigo: offsets de fim de campo antes do cabeçalho de 6 bytes."""
     deleted = bool(page[origin - 6] & REC_INFO_DELETED_FLAG)
+    if u16(page, origin - 5) >> 3 < 2:   # heap 0 e 1 = infimum/supremum: registro de dados com eles é lixo
+        raise CarverError("número de heap inválido")
     # No formato antigo, o cabeçalho diz quantos campos há e se os offsets ocupam 1 ou 2 bytes.
     n_fields = (u16(page, origin - 4) >> 1) & 0x3FF
     one_byte = page[origin - 3] & 0x01
@@ -1087,19 +1092,34 @@ def sql_literal(value):
     return f"'{escaped}'"
 
 
-# FAZ: transforma linhas em comandos INSERT (500 linhas por comando, com a lista de colunas, como o mysqldump
-#   --complete-insert) e devolve em bytes utf8.
-def rows_to_sql(table_name, columns, rows, batch=500):
+# Teto de cada comando INSERT inteiro: o max_allowed_packet padrão do MySQL 5.5 é 1 MB (1.048.576 bytes); comando maior derruba
+#   a conexão e a importação para ali.
+INSERT_BYTES = 1_000_000
+
+
+# FAZ: transforma linhas em comandos INSERT (até 500 linhas e INSERT_BYTES bytes por comando, com a lista de colunas, como o
+#   mysqldump --complete-insert) e devolve em bytes utf8. stats["oversized"] conta as linhas que sozinhas passam do teto.
+def rows_to_sql(table_name, columns, rows, batch=500, stats=None):
     """INSERTs com lista de colunas (como mysqldump --complete-insert), em bytes utf8."""
     if not rows:
         return b""
-    # Cada INSERT leva 500 linhas (mais rápido que um INSERT por linha).
     cols = ", ".join(f"`{c}`" for c in columns)
-    out = []
-    for start in range(0, len(rows), batch):
-        values = ",".join("(" + ",".join(sql_literal(v) for v in row) + ")" for row in rows[start:start + batch])
-        out.append(f"INSERT INTO `{table_name}` ({cols}) VALUES {values};")
-    return "\n".join(out).encode("utf8")
+    head = f"INSERT INTO `{table_name}` ({cols}) VALUES ".encode("utf8")
+    out, group, size = [], [], len(head)
+    for row in rows:
+        text = ("(" + ",".join(sql_literal(v) for v in row) + ")").encode("utf8")
+        if group and (len(group) >= batch or size + len(text) + 1 > INSERT_BYTES):
+            out.append(head + b",".join(group) + b";")
+            group, size = [], len(head)
+        if stats is not None and len(head) + len(text) + 1 > INSERT_BYTES:
+            stats["oversized"] = stats.get("oversized", 0) + 1
+        group.append(text)
+        size += len(text) + 1
+    out.append(head + b",".join(group) + b";")
+    if stats is not None:   # quantos comandos saíram e o maior deles (a aba Depuração mostra; o teto é INSERT_BYTES)
+        stats["inserts"] = stats.get("inserts", 0) + len(out)
+        stats["max_insert"] = max(stats.get("max_insert", 0), max(map(len, out)))
+    return b"\n".join(out)
 
 
 # ---------------------------------------------------------------------- DDL a partir do dicionário

@@ -13,13 +13,20 @@ kernel_paths.py - Os dois caminhos de leitura de tabela que usam o kernel WebAss
 import struct
 
 import kernel_bridge
-from innodb_carver import (FIL_PAGE_LSN, PAGE_N_RECS, CarverError, decode_value, iter_records, page_structure_error, sql_literal, u16,
+from innodb_carver import (FIL_PAGE_LSN, INSERT_BYTES, PAGE_N_RECS, CarverError, decode_value, iter_records, page_structure_error, sql_literal, u16,
                            u64)
 from stream_carver import BATCH_ROWS, leaf_runs, live_leaves
 
-INSERT_ROWS = 500          # linhas por INSERT, como em innodb_carver.rows_to_sql
-INSERT_BYTES = 1 << 20     # e no máximo ~1 MB de texto por INSERT (o max_allowed_packet padrão do MySQL 5.5 é de 1 MB)
+INSERT_ROWS = 500          # linhas por INSERT, como em innodb_carver.rows_to_sql (o teto de bytes, INSERT_BYTES, também vem de lá)
 RECORD_ERRORS = (CarverError, IndexError, struct.error, ValueError)
+
+
+# DEBUG-PROVISORIO: guarda as primeiras páginas em que registros foram descartados (a aba Depuração mostra).
+def note_bad(stats, page_no, before):
+    if stats["bad_records"] > before:
+        examples = stats.setdefault("bad_examples", [])
+        if len(examples) < 12:
+            examples.append(f"página {page_no}: {stats['bad_records'] - before}")
 
 
 # FAZ: nomes das colunas na ordem do CREATE TABLE e a permutação que leva os campos do registro a essa ordem.
@@ -48,19 +55,28 @@ def key_bytes(raw, n_key):
     return bytes(out)
 
 
-# FAZ: junta pedaços (quantidade, bytes) em comandos INSERT de até INSERT_ROWS linhas / INSERT_BYTES bytes.
-def inserts(table_name, columns, pieces):
+# FAZ: junta pedaços (quantidade, bytes) em comandos INSERT de até INSERT_ROWS linhas / INSERT_BYTES bytes (o comando inteiro).
+#   stats["oversized"] conta as linhas que sozinhas passam do teto (só importam com o max_allowed_packet do servidor aumentado).
+def inserts(table_name, columns, pieces, stats=None):
     head = f"INSERT INTO `{table_name}` ({', '.join(f'`{c}`' for c in columns)}) VALUES ".encode("utf8")
-    out, group, rows, size = [], [], 0, 0
+    out, group, rows, size = [], [], 0, len(head)
     for count, text in pieces:
+        if group and size + len(text) + 1 > INSERT_BYTES:
+            out.append(head + b",".join(group) + b";")
+            group, rows, size = [], 0, len(head)
+        if stats is not None and count == 1 and len(head) + len(text) + 1 > INSERT_BYTES:
+            stats["oversized"] = stats.get("oversized", 0) + 1
         group.append(text)
         rows += count
-        size += len(text)
-        if rows >= INSERT_ROWS or size >= INSERT_BYTES:
+        size += len(text) + 1
+        if rows >= INSERT_ROWS:
             out.append(head + b",".join(group) + b";")
-            group, rows, size = [], 0, 0
+            group, rows, size = [], 0, len(head)
     if group:
         out.append(head + b",".join(group) + b";")
+    if stats is not None and out:   # quantos comandos saíram e o maior deles (a aba Depuração mostra; o teto é INSERT_BYTES)
+        stats["inserts"] = stats.get("inserts", 0) + len(out)
+        stats["max_insert"] = max(stats.get("max_insert", 0), max(map(len, out)))
     return b"\n".join(out)
 
 
@@ -112,6 +128,7 @@ def stream_sql(carver, name, ddl_hint=None, progress=None, stats=None, lines=Fal
             progress(stats["pages"], total)
         page = ts.page(page_no)
         stats["pages"] += 1
+        bad_before = stats["bad_records"]
         result = prepared.convert(page, kernel_bridge.MODE_LINES if lines else kernel_bridge.MODE_BATCH) if prepared else None
         got = []
         if result is None or result.overflow:
@@ -131,6 +148,7 @@ def stream_sql(carver, name, ddl_hint=None, progress=None, stats=None, lines=Fal
             pieces.append((count, text))
             rows += count
             size += len(text)
+        note_bad(stats, page_no, bad_before)
         declared, error = u16(page, PAGE_N_RECS), page_structure_error(page, table.compact)
         if error or declared != seen:
             stats["damaged_pages"] += 1
@@ -187,10 +205,12 @@ def carve_sql(carver, name, ddl_hint=None, progress=None):
         page = ts.page(page_no)
         stats["pages"] += 1
         lsn = u64(page, FIL_PAGE_LSN)
+        bad_before = stats["bad_records"]
         result = prepared.convert(page, kernel_bridge.MODE_FULL) if prepared else None
         if result is None or result.overflow:
             for origin in iter_records(page, table.compact):
                 python_record(page, origin, lsn)
+            note_bad(stats, page_no, bad_before)
             continue
         stats["bad_records"] += result.bad
         meta, blob = result.meta, result.blob
@@ -205,6 +225,7 @@ def carve_sql(carver, name, ddl_hint=None, progress=None):
             best[key] = (version, deleted, b"" if deleted else kernel_bridge.fix_floats(blob[meta[i + 6]:meta[i + 6] + meta[i + 7]]))
         for origin in result.specials:
             python_record(page, origin, lsn)
+        note_bad(stats, page_no, bad_before)
     if progress:
         progress(len(leaves), len(leaves))
     pieces = []

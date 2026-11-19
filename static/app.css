@@ -369,7 +369,7 @@ input[type=text]:focus { outline: none; border-color: var(--ink); }
 .how li { counter-increment: s; position: relative; padding-left: 42px; font-size: .92rem; line-height: 1.55; overflow-wrap: anywhere; }
 .how li::before { content: counter(s); position: absolute; left: 0; top: 0; width: 28px; height: 28px; border-radius: 50%; background: var(--badge-bg); color: var(--text); display: grid; place-items: center; font-weight: 700; font-size: .85rem; }
 .note-box { margin-top: 16px; padding: 12px 14px; border-radius: 12px; background: var(--note-bg); border: 1px solid var(--note-line); font-size: .86rem; line-height: 1.5; color: var(--note-text); }
-#logText { width: 100%; min-height: 340px; resize: vertical; background: var(--console-bg); color: var(--console-text); border: 1px solid var(--console-bg); border-radius: 12px; padding: .8rem; font-family: var(--mono); font-size: .78rem; white-space: pre; }
+#logText, #dbgText { width: 100%; min-height: 340px; resize: vertical; background: var(--console-bg); color: var(--console-text); border: 1px solid var(--console-bg); border-radius: 12px; padding: .8rem; font-family: var(--mono); font-size: .78rem; white-space: pre; }
 .fb { margin-right: auto; color: var(--ok); font-size: .85rem; }
 .spinner { display: inline-block; width: 13px; height: 13px; border: 2px solid rgba(128, 128, 128, .4); border-top-color: currentColor; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -411,6 +411,3 @@ textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .toast.err strong { color: var(--err); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 
-/* Escolha do formato de entrega, logo acima do botão Recuperar. */
-.fast-format { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; font-size: .88rem; color: var(--muted-2); cursor: pointer; }
-.fast-format input { accent-color: var(--accent, currentColor); }

@@ -65,6 +65,8 @@ def prepare_all(data_dir, log=print):
     """Para recuperar VÁRIOS bancos da mesma pasta: abre o ibdata1 uma vez (a varredura é a parte cara) e roda a busca de
     tabelas perdidas olhando todos os bancos juntos (uma tabela sem nome só pode ser casada com um .frm de qualquer banco).
     Devolve (leitor, achadas {"banco/tabela": como}, [bancos a recuperar]); as tabelas sem banco ficam em UNNAMED_DB."""
+    if not os.path.isfile(os.path.join(data_dir, "ibdata1")):
+        raise RuntimeError("A pasta escolhida não tem o arquivo ibdata1.")
     databases = sorted(list_databases(data_dir))
     carver = InnodbCarver(os.path.join(data_dir, "ibdata1"), log=log, data_dir=data_dir).load()
     frm_columns = {}
@@ -120,6 +122,8 @@ class Recovery:
         self.objects = {"views": 0, "triggers": 0, "chaves_estrangeiras": 0}
         self.sha, self.sql_bytes = hashlib.sha256(), 0
         self.on_pages = None    # opcional: função (páginas lidas, total) chamada durante a leitura de cada tabela
+        self.debug = None       # DEBUG-PROVISORIO: função (texto) que recebe o registro técnico para a aba Depuração
+        self._cur_stats, self._cur_how = {}, "-"
 
     def warn(self, message):
         self.warnings.append(message)
@@ -195,6 +199,9 @@ class Recovery:
             self.log(f"Tabelas sem .frm mas com dados no ibdata1 (lidas direto): {', '.join(dict_only)}")
         self.tables = [(t, False) for t in tables] + [(t, True) for t in dict_only]
         self.log(f"Banco {self.db}: {len(self.tables)} tabelas a extrair.")
+        if self.debug:   # DEBUG-PROVISORIO
+            self.debug(f"PLANO banco={self.db} tabelas={len(self.tables)} so_no_dicionario={len(dict_only)} restauradas={len(self.restored)} "
+                       f"views={len(self.views)} formato={'LOAD DATA' if self.load else 'INSERT'}")
         return self._emit(SQL_HEADER.format(db=self.db).encode("utf8"))
 
     # FAZ: tabelas com .frm mas sem linha no dicionário: casa o .frm com as páginas (dictionary_rebuild). É
@@ -233,7 +240,33 @@ class Recovery:
     #   GBs nunca fica inteira na memória. table() junta os pedaços, para quem não precisa disso (testes, linha de comando).
     def begin_table(self, index):
         """Começa a tabela de número `index`; os pedaços do dump vêm de next_chunk()."""
-        self._parts = self._table_parts(index)
+        self._parts = self._traced(index)
+
+    # DEBUG-PROVISORIO: o mesmo que _table_parts, e no fim da tabela manda o resumo dela para self.debug.
+    def _traced(self, index):
+        started, before = time.time(), self.sql_bytes
+        self._cur_stats, self._cur_how = {}, "-"
+        yield from self._table_parts(index)
+        self._dbg_table(index, started, before)
+
+    def _dbg_table(self, index, started, bytes_before):
+        if not self.debug:
+            return
+        name = self.tables[index][0]
+        info, s = self.status.get(name, {}), self._cur_stats
+        line = (f"TABELA {index + 1}/{len(self.tables)} {self.db}.{name} | {info.get('status', '?')} | linhas={info.get('rows', 0)} | "
+                f"bytes={self.sql_bytes - bytes_before} inserts={s.get('inserts', 0)} maior_insert={s.get('max_insert', 0)} | "
+                f"{self._cur_how} | {time.time() - started:.1f}s")
+        extra = [f"{k}={s[k]}" for k in ("pages", "leaf_pages", "read_pages", "bad_records", "deleted", "duplicates", "damaged_pages",
+                                         "records_missing", "loose_pages", "missing_leaves", "oversized") if s.get(k)]
+        if s.get("mode"):
+            extra.append(f"modo={s['mode']}")
+        self.debug(line + (" | " + " ".join(extra) if extra else ""))
+        if info.get("note"):
+            self.debug("    nota: " + info["note"])
+        for key in ("bad_examples", "damaged_examples"):
+            if s.get(key):
+                self.debug(f"    {key}: " + "; ".join(s[key]))
 
     def next_chunk(self):
         """Próximo pedaço do dump da tabela em curso (bytes), ou None quando ela acabou."""
@@ -267,6 +300,7 @@ class Recovery:
         name, dict_only = self.tables[index]
         full = f"{self.db}/{name}"
         if not dict_only and self._is_myisam(name):
+            self._cur_how = "myisam"
             self.status[name] = {"rows": 0, "status": "NAO_LIDA",
                                  "note": "MyISAM: só o servidor MySQL lê esta tabela; não entrou no dump."}
             self.warn(f"Tabela {name}: MyISAM, não lida (use o programa de desktop para ela).")
@@ -291,9 +325,12 @@ class Recovery:
             return
 
         ddl = ddl_from_dictionary(tdef, hint)
-        rows, problem, info = 0, None, ""
+        rows, problem, info, stats = 0, None, "", {}
         blobs_before = getattr(self.carver, "external_damaged", 0)
-        if self._is_big(tdef):
+        big = self._is_big(tdef)
+        self._cur_how = ("grande" if big else "pequena") + "/" + ("kernel" if kernel_bridge.available() and tdef.compact else "python") + \
+            ("/so_dicionario" if dict_only else "")
+        if big:
             yield self._structure(name, f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n", ddl)
             stats = {}
             try:
@@ -306,7 +343,7 @@ class Recovery:
                             self._load_columns(name, tdef, columns, ddl)
                             yield self._emit(b"".join(text for _, text in pieces))
                         else:
-                            yield self._emit(kernel_paths.inserts(name, columns, pieces) + b"\n")
+                            yield self._emit(kernel_paths.inserts(name, columns, pieces, stats) + b"\n")
                 else:
                     for columns, records in stream_table(self.carver, full, ddl_hint=hint, progress=self.on_pages, stats=stats):
                         rows += len(records)
@@ -314,7 +351,7 @@ class Recovery:
                             self._load_columns(name, tdef, columns, ddl)
                             yield self._emit(load_format.rows_to_lines(records))
                         else:
-                            yield self._emit(rows_to_sql(name, columns, records) + b"\n")
+                            yield self._emit(rows_to_sql(name, columns, records, stats=stats) + b"\n")
                 if stats.get("bad_records"):
                     problem = f"{stats['bad_records']} registros ilegíveis descartados"
                 if stats.get("damaged_pages"):
@@ -338,10 +375,10 @@ class Recovery:
             try:
                 if kernel_bridge.available():
                     columns, count, pieces, stats = kernel_paths.carve_sql(self.carver, full, ddl_hint=hint, progress=self.on_pages)
-                    data, rows = (b"".join(text + b"\n" for _, text in pieces) if self.load else kernel_paths.inserts(name, columns, pieces)), count
+                    data, rows = (b"".join(text + b"\n" for _, text in pieces) if self.load else kernel_paths.inserts(name, columns, pieces, stats)), count
                 else:
                     columns, records, stats = self.carver.carve(full, ddl_hint=hint, progress=self.on_pages)
-                    data, rows = (load_format.rows_to_lines(records) if self.load else rows_to_sql(name, columns, records)), len(records)
+                    data, rows = (load_format.rows_to_lines(records) if self.load else rows_to_sql(name, columns, records, stats=stats)), len(records)
                 if self.load:
                     self._load_columns(name, tdef, columns, ddl)
                 if stats["bad_records"]:
@@ -359,9 +396,13 @@ class Recovery:
                 yield self._emit(data)
             else:
                 yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8") + data + b"\n\n")
+        self._cur_stats = stats
         cut = getattr(self.carver, "external_damaged", 0) - blobs_before
         if cut:
             problem = "; ".join(x for x in (problem, f"{cut} valor(es) longo(s) (text/blob) incompleto(s): páginas de BLOB danificadas") if x)
+        if stats.get("oversized"):
+            problem = "; ".join(x for x in (problem, f"{stats['oversized']} linha(s) com mais de 1 MB: para importar, aumente o "
+                                                     "max_allowed_packet do servidor MySQL (ex.: max_allowed_packet=64M no my.ini)") if x)
         if problem:
             self.warn(f"Tabela {name}: {problem}")
         self.no_fk[name.lower()] = name
@@ -498,7 +539,11 @@ class Recovery:
         self.bad_pages = self.carver.space.bad_pages
         if not self.shared_carver:   # um carver emprestado (vários bancos na pasta) é fechado por quem o abriu
             self.carver.close()
-        return self._emit(tail)
+        out = self._emit(tail)
+        if self.debug:   # DEBUG-PROVISORIO
+            self.debug(f"FIM banco={self.db} bytes_emitidos={self.sql_bytes} sha256={self.sha.hexdigest()} fks={self.objects['chaves_estrangeiras']} "
+                       f"views={self.objects['views']} triggers={self.objects['triggers']} paginas_doublewrite={self.repaired} avisos={len(self.warnings)}")
+        return out
 
     def report(self):
         """Resumo em JSON (texto): o que foi lido, tabela por tabela, e o SHA-256 do dump."""

@@ -40,6 +40,10 @@
         <button class="rail-btn" id="goHow" data-view="how" onclick="showView('how')" title="Como funciona?" aria-label="Como funciona?">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M9.8 9.6a2.3 2.3 0 0 1 4.4.9c0 1.6-2.2 1.9-2.2 3.2M12 16.6v.1"/></svg>
         </button>
+        <!-- DEBUG-PROVISORIO: aba de depuração (registro técnico da recuperação). Tirar antes de publicar. -->
+        <button class="rail-btn" id="goDebug" data-view="debug" onclick="showView('debug')" title="Depuração (provisório)" aria-label="Depuração (provisório)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8.5 8-4 4 4 4M15.5 8l4 4-4 4M13.5 6l-3 12"/></svg>
+        </button>
       </div>
       <!-- O BOTÃO DO TEMA: alterna entre o modo claro e o escuro; a escolha fica gravada no navegador. -->
       <div class="rail-foot">
@@ -48,7 +52,7 @@
           <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.6"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4M16.6 16.6 18 18M18 6l-1.4 1.4M7.4 16.6 6 18"/></svg>
         </button>
         <!-- A VERSÃO do site: sobe a cada publicação, para conferir que a página aberta é a atual. -->
-        <div class="rail-version" title="Versão do site">v1.8.6</div>
+        <div class="rail-version" title="Versão do site">v1.8.7</div>
       </div>
     </nav>
 
@@ -105,16 +109,11 @@
               <p id="dropSub">Clique para escolher o .zip, ou arraste o .zip ou a pasta data · nada sai do seu computador</p>
             </div>
 
-            <label class="fast-format" for="fastFormat" title="Entrega um .zip com as linhas em arquivos de texto (LOAD DATA) e os índices criados no fim: o MySQL importa mais rápido que com INSERT.">
-              <input type="checkbox" id="fastFormat">
-              <span>Formato rápido de importação (LOAD DATA) · entrega um .zip</span>
-            </label>
             <div class="actions">
               <button class="btn btn-run" id="btnRun" onclick="startRecovery()" disabled>
                 <div class="fill" id="runFill"></div><span id="runLabel" aria-live="polite">Recuperar</span>
               </button>
-              <button class="btn btn-get" id="btnGet" onclick="onGet()" disabled>Baixar .sql</button>
-              <button class="btn btn-get" id="btnZip" onclick="openZipModal()" disabled>Baixar .zip</button>
+              <button class="btn btn-get" id="btnGet" onclick="onGet()" disabled>Baixar .zip</button>
             </div>
             <div class="main-note" id="mainNote" role="status" aria-live="polite"></div>
             <div class="done-actions" id="doneActions" hidden>
@@ -168,13 +167,12 @@
           </section>
         </section>
 
-        <!-- TELA DOWNLOADS: o dump SQL (ou o .zip de vários bancos), o .zip compactado e o relatório de auditoria. -->
+        <!-- TELA DOWNLOADS: o .zip com os .sql e o relatório de auditoria. -->
         <section class="view" id="view-downloads">
           <header class="stage-head"><h1>Downloads</h1></header>
           <section class="card">
             <div class="dl-list">
-              <div class="dl-item"><div><span id="dlSqlName">Dump SQL</span><small id="dlSqlInfo"></small></div><button type="button" class="small-btn" id="dlSql" onclick="download('sql')" disabled>Baixar</button></div>
-              <div class="dl-item"><div>Dump SQL compactado<small id="dlZipInfo"></small></div><button type="button" class="small-btn" id="dlZip" onclick="openZipModal()" disabled>Baixar .zip</button></div>
+              <div class="dl-item"><div><span id="dlSqlName">Recuperação (.zip com os .sql)</span><small id="dlSqlInfo"></small></div><button type="button" class="small-btn" id="dlSql" onclick="download('sql')" disabled>Baixar</button></div>
               <div class="dl-item"><div>Relatório de auditoria</div><button type="button" class="small-btn" id="dlReport" onclick="download('report')" disabled>Abrir</button></div>
             </div>
           </section>
@@ -200,12 +198,27 @@
           <section class="card">
             <ol class="how">
               <li><b>Escolha o banco.</b> Pode ser um <code>.zip</code> (clique na área ou arraste) ou a pasta <code>data</code> do MySQL, a que tem o arquivo <code>ibdata1</code> (arraste para a área). O <code>.zip</code> é descompactado aos poucos no disco do navegador e apagado no fim, então não depende da memória. Banco em <code>.rar</code>: extraia antes e escolha a pasta.</li>
-              <li><b>Recupere.</b> Clique em Recuperar. No Chrome e no Edge você escolhe onde salvar o <code>.sql</code> (ou o <code>.zip</code>, com vários bancos) e ele é gravado direto no disco, tabela por tabela. Nos outros navegadores o dump é guardado no disco do navegador e baixado no fim, o que pede espaço livre extra.</li>
+              <li><b>Recupere.</b> Clique em Recuperar. No Chrome e no Edge você escolhe onde salvar o <code>.zip</code> e ele é gravado direto no disco, tabela por tabela. Nos outros navegadores o <code>.zip</code> é guardado no disco do navegador e baixado no fim, o que pede espaço livre extra.</li>
               <li><b>Sem servidor MySQL.</b> O Python roda dentro do navegador (Pyodide), lê as páginas do <code>ibdata1</code> e refaz a estrutura pelo dicionário do InnoDB e pelos <code>.frm</code>. Os arquivos não saem do seu computador; só o Pyodide é baixado da internet.</li>
               <li><b>Confira.</b> O relatório mostra cada tabela, os registros lidos, os avisos de registros ilegíveis ou páginas perdidas e o SHA-256 do dump.</li>
-              <li><b>Baixe o .zip (opcional).</b> Clique em Baixar .zip e escolha onde salvar. Ele leva o <code>.sql</code> e um LEIA-ME. Sem ele, importe o <code>.sql</code> no Query Browser ou num MySQL: <code>mysql -uroot -p &lt; banco.sql</code>.</li>
+              <li><b>Restaure.</b> O <code>.zip</code> leva um <code>.sql</code> por banco e um LEIA-ME. Extraia e importe cada <code>.sql</code> no Query Browser ou num MySQL: <code>mysql -uroot -p &lt; banco.sql</code>.</li>
             </ol>
             <div class="note-box">Não lê tabelas MyISAM, rotinas e eventos, nem tabelas <code>COMPRESSED</code>, e não aceita MySQL 8.0 nem entrada <code>.sql</code>. O site não gera a pasta <code>data</code> (o navegador não tem servidor MySQL): para ela, use o Recuperador de desktop com o <code>.sql</code>. Registros apagados há pouco tempo podem reaparecer.</div>
+          </section>
+        </section>
+
+        <!-- DEBUG-PROVISORIO: TELA DEPURAÇÃO. Registro técnico, com a hora, de tudo o que a recuperação faz e a conferência do arquivo gerado. -->
+        <section class="view" id="view-debug">
+          <header class="stage-head"><h1>Depuração <small>(provisório)</small></h1><p>Registro técnico da última recuperação. Copie tudo e envie para análise; depois de restaurar no Query Browser, rode a consulta de conferência.</p></header>
+          <section class="card">
+            <textarea id="dbgText" aria-label="Registro de depuração da recuperação" readonly spellcheck="false">Sem registro ainda. Rode uma recuperação.</textarea>
+            <div class="row-end">
+              <span class="fb" id="dbgFb"></span>
+              <span class="fb" id="dbgCount"></span>
+              <button class="small-btn" onclick="copyDbgQuery()" title="Uma consulta que conta as linhas de cada tabela e compara com o esperado">Copiar consulta de conferência</button>
+              <button class="small-btn" onclick="saveDbg()">Baixar .txt</button>
+              <button class="small-btn primary" onclick="copyDbg()">Copiar tudo</button>
+            </div>
           </section>
         </section>
 
@@ -216,23 +229,7 @@
   <!-- AVISO NO CANTO: aparece quando a recuperação (ou o .zip) termina. -->
   <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-  <!-- O POP-UP DO .ZIP: avisa que demora, estima o tempo pelo tamanho do dump e mostra o andamento. -->
-  <div class="modal-bg" id="zipBg" onclick="if (event.target === this) closeZipModal()">
-    <div class="modal" id="zipModal" role="dialog" aria-modal="true" aria-labelledby="zipTitle" tabindex="-1">
-      <div class="modal-head"><strong id="zipTitle">Baixar .zip</strong><button class="modal-x" onclick="closeZipModal()" title="Fechar (Esc)" aria-label="Fechar">✕</button></div>
-      <div class="modal-body">
-        <p class="hint" id="zipText"></p>
-        <div class="bar" id="zipBar" hidden><div id="zipFill"></div></div>
-        <p class="field-info" id="zipInfo"></p>
-        <p class="field-info err" id="zipError" role="alert"></p>
-        <div class="row-end">
-          <button class="small-btn" id="zipCancel" onclick="closeZipModal()">Cancelar</button>
-          <button class="small-btn primary" id="zipGo" onclick="startZip()">Gerar .zip</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
+  <script src="static/debug.js"></script><!-- DEBUG-PROVISORIO -->
   <script src="static/app.js"></script>
 </body>
 </html>

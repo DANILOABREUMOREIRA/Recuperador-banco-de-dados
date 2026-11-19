@@ -7,24 +7,35 @@ importScripts("kernel.js");   // define loadKernel: o laço quente (ler registro
 const MODULES = ["innodb_carver", "page_health", "mysql_codec", "frm_parser", "dictionary_rebuild", "stream_carver", "bigfile", "lost_tables",
   "kernel_bridge", "kernel_paths", "load_format", "web_driver"];
 
+// DEBUG-PROVISORIO: registro técnico para a aba Depuração (a tela mostra tudo o que chega como {dbg}).
+const dbg = (text) => postMessage({ dbg: text });
+const mbytes = (n) => (n / 1048576).toFixed(1).replace(".", ",") + " MB";
+
 // Recebe { files: [{name: "ibdata1" | "banco/tabela.frm", data: File}], handle: FileSystemFileHandle | null,
-//   dumpDir } e avisa a tela do que acontece: {phase}, {log}, {planned}, {tableStart}, {pages}, {table}, {done} ou {error}.
+//   dumpDir, mode } e avisa a tela do que acontece: {phase}, {log}, {planned}, {tableStart}, {pages}, {table}, {done} ou {error}.
 // O dump vai para o arquivo que o usuário escolheu (handle: Chrome e Edge) ou, sem ele, para um arquivo do disco do
 //   navegador (OPFS, na pasta dumpDir) que a tela baixa no fim. Nunca fica na memória: um dump de banco grande tem GBs.
-// Uma pasta com UM banco gera um .sql. Com VÁRIOS bancos, todos são recuperados e saem num .zip com um .sql por banco
-//   (montado em fluxo, durante a recuperação).
+// O resultado é sempre um .zip com um .sql por banco da pasta (montado em fluxo, durante a recuperação) e um LEIA-ME.
 onmessage = async ({ data }) => {
-  let writable = null, staged = null;
   try {
     postMessage({ phase: "prep" });
+    dbg(`worker iniciado: ${data.files.length} arquivos, modo=${data.mode}, kernel ${data.noKernel ? "desligado (?semkernel=1)" : "pedido"}, ` +
+        `destino=${data.handle ? "arquivo escolhido (" + data.handle.name + ")" : "disco do navegador (OPFS, pasta " + data.dumpDir + ")"}`);
+    const pyStart = Date.now();
     const pyodide = await loadPyodide();
+    dbg(`Pyodide ${pyodide.version} carregado em ${Date.now() - pyStart} ms`);
+    const moduleSizes = [];
     for (const name of MODULES) {
       const response = await fetch(`py/${name}.py`);
       if (!response.ok) throw new Error(`Não consegui baixar py/${name}.py (${response.status}).`);
-      pyodide.FS.writeFile(`/home/pyodide/${name}.py`, await response.text());
+      const source = await response.text();
+      pyodide.FS.writeFile(`/home/pyodide/${name}.py`, source);
+      moduleSizes.push(`${name}=${source.length}`);
     }
+    dbg(`módulos Python (caracteres): ${moduleSizes.join(" ")}`);
     pyodide.FS.mkdir("/data");
     pyodide.FS.mount(pyodide.FS.filesystems.WORKERFS, { blobs: data.files }, "/data");
+    dbg(`WORKERFS: /data montado com ${data.files.length} arquivos, ${mbytes(data.files.reduce((sum, f) => sum + f.data.size, 0))}`);
     pyodide.globals.set("js_log", (message) => postMessage({ log: message }));
     // streamPages (só nos testes de desenvolvimento) troca o limite de folhas a partir do qual a tabela é lida em lotes.
     pyodide.globals.set("stream_pages", data.streamPages === undefined ? null : data.streamPages);
@@ -40,7 +51,9 @@ onmessage = async ({ data }) => {
       try {
         const response = await fetch("kernel.wasm");
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        pyodide.globals.set("js_kernel", await loadKernel(await response.arrayBuffer()));
+        const wasm = await response.arrayBuffer();
+        dbg(`kernel.wasm baixado: ${wasm.byteLength} bytes`);
+        pyodide.globals.set("js_kernel", await loadKernel(wasm));
         pyodide.runPython("kernel_bridge.set_kernel(js_kernel)");
         postMessage({ log: "Kernel WebAssembly ligado: as tabelas são lidas pelo código compilado." });
       } catch (error) {
@@ -48,55 +61,21 @@ onmessage = async ({ data }) => {
       }
     }
     const databases = JSON.parse(pyodide.runPython('json.dumps(list(web_driver.list_databases("/data")))'));
-    // Formato rápido (data.mode === "load"), mesmo com um banco só, e vários bancos saem num .zip; o formato comum de um banco só é um .sql.
-    if (databases.length > 1 || data.mode === "load") {
-      const result = await recoverMany(pyodide, data, databases, data.mode === "load");
-      postMessage({ done: result.report, blob: result.blob, heapMB: Math.round(pyodide._module.HEAPU8.length / 1048576) });
-      return;
-    }
-    pyodide.runPython('recovery = web_driver.Recovery("/data", log=js_log, stream_pages=stream_pages)');
-    const recovery = pyodide.globals.get("recovery");
-    recovery.on_pages = (done, total) => postMessage({ pages: { done, total } });
-
-    let write;
-    if (data.handle) {
-      writable = await data.handle.createWritable();
-      write = (bytes) => writable.write(bytes);
-    } else {
-      staged = await opfsFile(data.dumpDir, "dump.sql");
-      write = (bytes) => staged.write(bytes);
-    }
-    const put = async (proxy) => {
-      const bytes = proxy.toJs();
-      proxy.destroy();
-      if (bytes.length) await write(bytes);
-    };
-
-    postMessage({ phase: "dict" });
-    await put(recovery.plan());
-    const names = JSON.parse(pyodide.runPython("json.dumps([name for name, _ in recovery.tables])"));
-    postMessage({ planned: names, weights: names.map((_, i) => recovery.leaf_count(i)) });
-    for (let index = 0; index < names.length; index++) {
-      postMessage({ tableStart: { index, total: names.length, name: names[index] } });
-      // A tabela sai em pedaços: cada um vai para o disco antes de o Python montar o próximo.
-      recovery.begin_table(index);
-      for (let chunk = recovery.next_chunk(); chunk !== undefined; chunk = recovery.next_chunk()) await put(chunk);
-      postMessage({ table: JSON.parse(recovery.info(index)) });
-    }
-    postMessage({ phase: "objects" });
-    await put(recovery.finish());
-    postMessage({ phase: "close" });
-    let blob = null;
-    if (writable) await writable.close();
-    else { staged.access.flush(); staged.access.close(); blob = await staged.handle.getFile(); }
-    // A memória do WebAssembly só cresce: o tamanho no fim é o pico que o Python usou.
-    postMessage({ done: JSON.parse(recovery.report()), blob, heapMB: Math.round(pyodide._module.HEAPU8.length / 1048576) });
+    if (!databases.length) throw new Error("Nenhum banco de usuário com arquivos .frm foi encontrado na pasta escolhida.");
+    dbg(`bancos com .frm (banco: quantidade): ${pyodide.runPython('json.dumps(web_driver.list_databases("/data"))')}`);
+    dbg("saída: .zip, um .sql por banco");
+    const result = await recoverMany(pyodide, data, databases, data.mode === "load");
+    postMessage({ done: result.report, blob: result.blob, heapMB: Math.round(pyodide._module.HEAPU8.length / 1048576) });
   } catch (error) {
-    if (writable) await writable.abort().catch(() => {});
-    if (staged) { try { staged.access.close(); } catch (e) { /* já fechado */ } }
     const quota = error && error.name === "QuotaExceededError";
+    const text = String((error && error.message) || error);
+    dbg(`ERRO no worker (${(error && error.name) || typeof error}): ${(error && error.stack) || text}`);
+    // Erro do Python: o traceback inteiro vai para o log; a tela mostra só a última linha (a mensagem).
+    const lines = text.trim().split("\n");
+    if (lines[0].startsWith("Traceback")) postMessage({ log: text });
+    const message = lines[0].startsWith("Traceback") ? lines[lines.length - 1].replace(/^(RuntimeError|CarverError|[\w.]+\.CarverError): /, "") : text;
     postMessage({ error: quota ? "O disco do navegador encheu ao guardar o dump. Libere espaço no disco ou use o Chrome ou o Edge, que gravam direto no arquivo escolhido."
-      : String((error && error.message) || error) });
+      : message });
   }
 };
 
@@ -117,21 +96,34 @@ async function recoverMany(pyodide, data, databases, load) {
   const zip = await import("./vendor/zip/zip.min.js");
   zip.configure({ useWebWorkers: false });   // este já é um worker
   const started = Date.now();
-  let file = null, destination;
-  if (data.handle) destination = await data.handle.createWritable();
-  else {
+  // O destino passa por `sink`, que a gente controla: num erro ele é abortado direto (o ZipWriter trava o stream e não deixa abortá-lo
+  //   por fora), e o arquivo escolhido não fica aberto e incompleto até a aba fechar.
+  let file = null, sink;
+  if (data.handle) {
+    const out = (await data.handle.createWritable()).getWriter();
+    sink = { write: (chunk) => out.write(chunk), close: () => out.close(), abort: () => out.abort() };
+  } else {
     file = await opfsFile(data.dumpDir, "dump.zip");
-    destination = new WritableStream({
+    sink = {
       write(chunk) { file.write(chunk); },
       close() { file.access.flush(); file.access.close(); },
       abort() { file.access.close(); },
-    });
+    };
   }
-  const writer = new zip.ZipWriter(destination, { zip64: true });   // o tamanho de cada .sql só se sabe no fim
+  try {
+    return await zipAll(pyodide, data, databases, load, zip, sink, file, started);
+  } catch (error) {
+    try { await sink.abort(); } catch (e) { /* já fechado */ }
+    throw error;
+  }
+}
+
+async function zipAll(pyodide, data, databases, load, zip, sink, file, started) {
+  const writer = new zip.ZipWriter(new WritableStream(sink), { zip64: true });   // o tamanho de cada .sql só se sabe no fim
 
   postMessage({ phase: "dict" });
-  postMessage({ log: databases.length > 1 ? `${databases.length} bancos na pasta: ${databases.join(", ")}. Todos serão recuperados, num .zip.`
-    : `Formato rápido: o .zip leva as linhas em arquivos de texto, que o MySQL carrega com LOAD DATA.` });
+  postMessage({ log: load ? `Formato rápido: o .zip leva as linhas em arquivos de texto, que o MySQL carrega com LOAD DATA.`
+    : `${databases.length} banco(s) na pasta: ${databases.join(", ")}. Saem num .zip, um .sql por banco.` });
   pyodide.globals.set("load_mode", !!load);
   pyodide.runPython("carver, found, databases = web_driver.prepare_all('/data', js_log)\nrecoveries = {}");
   postMessage({ log: `Dicionário e tabelas perdidas: ${((Date.now() - started) / 1000).toFixed(1)} s.` });
@@ -142,6 +134,7 @@ async function recoverMany(pyodide, data, databases, load) {
     pyodide.runPython('recoveries[db_name] = web_driver.recovery_for("/data", db_name, carver, found, js_log, stream_pages, \'load\' if load_mode else \'sql\')');
     const recovery = pyodide.runPython("recoveries[db_name]");
     recovery.on_pages = (done, total) => postMessage({ pages: { done, total } });
+    recovery.debug = dbg;   // DEBUG-PROVISORIO
     const header = recovery.plan();   // cada banco lista as tabelas dele; o cabeçalho do .sql espera a vez do banco
     const tables = JSON.parse(pyodide.runPython("json.dumps([name for name, _ in recoveries[db_name].tables])"));
     plans.push({ db, recovery, header, tables });
@@ -164,22 +157,26 @@ async function recoverMany(pyodide, data, databases, load) {
     let addError = null;
     adding.catch(e => { addError = e; });
     const out = stream.writable.getWriter();
+    let sent = 0;   // DEBUG-PROVISORIO: bytes entregues ao .zip (tem de ser igual aos que o Python emitiu)
     const put = async (proxy) => {
       const bytes = proxy.toJs();
       proxy.destroy();
-      if (bytes.length) await out.write(bytes);
+      if (bytes.length) { await out.write(bytes); sent += bytes.length; }
     };
+    dbg(`${db}.sql: começando a gravar no .zip`);
     await put(plan.header);
     for (let index = 0; index < plan.tables.length; index++, counter++) {
       postMessage({ tableStart: { index: counter, total: labels.length, name: labels[counter] } });
       recovery.begin_table(index);
       for (let chunk = recovery.next_chunk(); chunk !== undefined; chunk = recovery.next_chunk()) await put(chunk);
       postMessage({ table: { ...JSON.parse(recovery.info(index)), name: labels[counter] } });
+      if (sent !== recovery.sql_bytes) dbg(`  DIVERGÊNCIA após ${labels[counter]}: entregue ao .zip ${sent} bytes, o Python emitiu ${recovery.sql_bytes}`);
     }
     await put(recovery.finish());
     await out.close();
     await adding;
     if (addError) throw addError;
+    dbg(`${db}.sql fechado: ${sent} bytes entregues ao .zip, o Python emitiu ${recovery.sql_bytes}${sent === recovery.sql_bytes ? " (iguais)" : " (DIFERENTES)"}; memória do Python ${mbytes(pyodide._module.HEAPU8.length)}`);
     reports[db] = JSON.parse(recovery.report());
     postMessage({ log: `${db}: ${reports[db].registros.toLocaleString("pt-BR")} registros em ${Object.keys(reports[db].tabelas).length} tabelas.` });
   }
@@ -190,7 +187,9 @@ async function recoverMany(pyodide, data, databases, load) {
   postMessage({ phase: "close" });
   await writer.close();
   pyodide.runPython("carver.close()");
-  return { report, blob: file ? await file.handle.getFile() : null };
+  const blob = file ? await file.handle.getFile() : null;
+  dbg(`.zip fechado${blob ? ` (${blob.size} bytes no disco do navegador)` : " (gravado direto no destino escolhido)"}`);
+  return { report, blob };
 }
 
 const safeName = (text) => text.replace(/[^A-Za-z0-9_.-]/g, "_");
@@ -285,7 +284,8 @@ function fastExtras(reports) {
 
 // Junta os relatórios dos bancos num só (a tela lê este formato).
 function combine(reports, seconds) {
-  const total = { banco: Object.keys(reports).join(", "), bancos: reports, segundos: Math.round(seconds * 10) / 10, registros: 0, sql_bytes: 0, sha256: "",
+  const only = Object.values(reports).length === 1 ? Object.values(reports)[0] : null;   // um banco só: o SHA-256 dele vale para o relatório
+  const total = { banco: Object.keys(reports).join(", "), bancos: reports, segundos: Math.round(seconds * 10) / 10, registros: 0, sql_bytes: 0, sha256: only ? only.sha256 : "",
     paginas_refeitas_doublewrite: 0, paginas_indice_invalidas: 0, objetos: { views: 0, triggers: 0, chaves_estrangeiras: 0 }, avisos: [], tabelas: {} };
   for (const [db, r] of Object.entries(reports)) {
     total.registros += r.registros;

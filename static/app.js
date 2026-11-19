@@ -52,13 +52,14 @@ function setSide(open) {
   try { localStorage.setItem('side', open ? '1' : '0'); } catch (e) { /* sem armazenamento */ }
 }
 function toggleSide() { setSide(!document.body.classList.contains('side-open')); }
-const VIEWS = ['recover', 'tables', 'downloads', 'log', 'how'];
+const VIEWS = ['recover', 'tables', 'downloads', 'log', 'how', 'debug'];   // 'debug' = DEBUG-PROVISORIO
 let currentView = 'recover';
 function showView(name) {
   currentView = name;
   VIEWS.forEach(view => $('view-' + view).classList.toggle('show', view === name));
   document.querySelectorAll('.rail-btn[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === name));
   $('stage').scrollTop = 0;
+  if (name === 'debug') dbgDraw();   // DEBUG-PROVISORIO
   drawTables();
   if (window.innerWidth <= 900) setSide(false);
 }
@@ -67,10 +68,6 @@ function showView(name) {
   try { saved = localStorage.getItem('side'); } catch (e) { /* sem armazenamento */ }
   setSide(saved === null ? window.innerWidth > 900 : saved === '1');
 })();
-
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && $('zipBg').classList.contains('open')) closeZipModal();
-});
 
 // ---------- escolher o banco: .zip ou a pasta data ----------
 const EMPTY_TITLE = 'Solte aqui o banco';
@@ -164,21 +161,14 @@ function refreshButtons() {
   $('btnRun').disabled = running() || !picked || !projectName;
   $('drop').classList.toggle('locked', running());
   const done = last.state === 'COMPLETED';
-  // Baixar só vale quando o navegador guardou o dump na memória; no outro caso o .sql já está no disco.
-  // Pronta a recuperação, o Recuperar some: o Baixar .sql ocupa o lugar dele e o Baixar .zip fica à direita.
+  // Pronta a recuperação, o Recuperar some e o Baixar .zip ocupa o lugar dele. No Chrome e no Edge o .zip já foi gravado onde você escolheu.
   $('btnRun').hidden = done;
-  // Com vários bancos o resultado já é um .zip (um .sql por banco): o botão do dump vira "Baixar .zip".
-  const multi = done && !!last.multi;
-  $('btnZip').hidden = !done;
+  $('btnGet').hidden = !done;
   $('btnGet').disabled = !(done && last.blob);
-  $('btnGet').textContent = done && last.mode === 'disk' ? 'Salvo no disco' : multi ? 'Baixar .zip' : 'Baixar .sql';
+  $('btnGet').textContent = done && last.mode === 'disk' ? 'Salvo no disco' : 'Baixar .zip';
   $('dlSql').disabled = !(done && last.blob);
-  $('dlSqlName').textContent = multi ? 'Dumps SQL de todos os bancos (.zip)' : 'Dump SQL';
   $('dlSqlInfo').textContent = done && last.mode === 'disk' ? 'Gravado direto no disco: ' + last.savedName : '';
   $('dlReport').disabled = !(done && last.report);
-  const zipOk = done && !!(last.blob || last.handle) && !zipWorker;
-  $('btnZip').disabled = !zipOk;
-  $('dlZip').disabled = !zipOk;
 }
 function setRunLabel() {
   $('runLabel').innerHTML = running() ? '<span class="spinner"></span>Recuperando ' + last.progress + '%' : 'Recuperar';
@@ -188,39 +178,13 @@ function setRunLabel() {
 const fileSafe = name => name.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '') || 'banco_recuperado';
 
 // (o clique em Recuperar pergunta onde salvar, no Chrome e no Edge: startRecovery)
-// Os bancos de usuário de uma lista de caminhos: a pasta pai de cada .frm (fora os bancos do sistema). Igual ao Python.
-const SYSTEM_DBS = new Set(['mysql', 'performance_schema', 'information_schema']);
-function databasesIn(paths) {
-  const found = new Set();
-  for (const path of paths) {
-    const m = /(?:^|\/)([^/]+)\/[^/]+\.frm$/i.exec(path);
-    if (m && !SYSTEM_DBS.has(m[1].toLowerCase())) found.add(m[1]);
-  }
-  return found;
-}
-// Quantos bancos a recuperação vai ter (vários bancos saem num .zip, um só sai num .sql). No .zip lê só o índice dele.
-async function countDatabases() {
-  if (picked.kind !== 'archive') return databasesIn(picked.files.map(f => f.name)).size;
-  try {
-    const zip = await import('../vendor/zip/zip.min.js');
-    zip.configure({ useWebWorkers: false });
-    const reader = new zip.ZipReader(new zip.BlobReader(picked.file));
-    const entries = await reader.getEntries();
-    await reader.close();
-    return databasesIn(entries.map(e => e.filename)).size;
-  } catch (e) { return 1; }
-}
 async function startRecovery() {
   if (running() || !picked || !projectName) return;
   let handle = null;
-  const many = (await countDatabases()) > 1;
-  // Formato rápido (LOAD DATA): o resultado é sempre um .zip, mesmo com um banco só.
-  const fast = $('fastFormat').checked;
+  // O resultado é sempre UM .zip, com um .sql por banco da pasta e um LEIA-ME.
   if (CAN_STREAM) {
     try {
-      handle = await window.showSaveFilePicker(many || fast
-        ? { suggestedName: fileSafe(projectName) + '.zip', types: [{ description: 'Arquivo ZIP', accept: { 'application/zip': ['.zip'] } }] }
-        : { suggestedName: fileSafe(projectName) + '.sql', types: [{ description: 'Dump SQL', accept: { 'application/sql': ['.sql'] } }] });
+      handle = await window.showSaveFilePicker({ suggestedName: fileSafe(projectName) + '.zip', types: [{ description: 'Arquivo ZIP', accept: { 'application/zip': ['.zip'] } }] });
     } catch (error) {
       if (error.name !== 'AbortError') note('Não foi possível escolher o local do arquivo: ' + error.message, true);
       return;
@@ -228,7 +192,7 @@ async function startRecovery() {
   }
   askNotifyPermission();   // gesto do clique em Recuperar: o navegador exige para perguntar
   note('');
-  runRecovery(picked.kind === 'archive' ? { archive: picked.file } : { files: picked.files }, handle, projectName, undefined, fast ? 'load' : 'sql');
+  runRecovery(picked.kind === 'archive' ? { archive: picked.file } : { files: picked.files }, handle, projectName, undefined, 'sql');
 }
 
 // AS ETAPAS (a estante e a dica): nome, descrição e a porcentagem em que cada uma começa.
@@ -236,9 +200,9 @@ const STAGES = [
   { name: 'Preparação', start: 0, text: 'Liga o Python no navegador (Pyodide) e monta a lista de arquivos do banco.' },
   { name: 'Descompactação', start: 3, text: 'Abre o .zip e grava no disco do navegador só o que a leitura precisa (ibdata1, .frm, .ibd e .TRG). Com a pasta data, esta etapa não existe.' },
   { name: 'Dicionário do InnoDB', start: 15, text: 'Refaz as páginas rasgadas pelo doublewrite, varre o ibdata1 e lê as tabelas internas do InnoDB.' },
-  { name: 'Leitura das tabelas', start: 24, text: 'Lê cada tabela direto das páginas, monta o CREATE TABLE e as linhas (INSERTs ou o texto do LOAD DATA) e grava.' },
+  { name: 'Leitura das tabelas', start: 24, text: 'Lê cada tabela direto das páginas, monta o CREATE TABLE e os INSERTs e grava.' },
   { name: 'Chaves, views e triggers', start: 92, text: 'Recria as chaves estrangeiras do dicionário e as views e triggers dos arquivos da pasta.' },
-  { name: 'Fechamento', start: 97, text: 'Fecha o arquivo .sql e monta o resumo e o relatório.' },
+  { name: 'Fechamento', start: 97, text: 'Fecha o .zip (um .sql por banco e o LEIA-ME) e monta o resumo e o relatório.' },
 ];
 const EXTRACT_FROM = 3, EXTRACT_SPAN = 12, DICT_FROM = 15;   // a descompactação vai de 3% a 15%
 const TABLES_FROM = 24, TABLES_SPAN = 68;                    // a etapa das tabelas vai de 24% a 92%
@@ -315,6 +279,7 @@ function runRecovery(source, handle, name, onDone, mode) {
   last = { ...freshState(), state: 'RUNNING', mode: handle ? 'disk' : 'staged', handle, savedName: handle ? handle.name : '', projectName: name,
     step_description: 'Preparando...', task: { label: 'Preparação', percent: null, detail: '' } };
   logs = [];
+  dbgStart(name, source, handle, mode);   // DEBUG-PROVISORIO
   shownError = false;
   startedAt = Date.now();
   est = { phase: source.archive ? 'extract' : 'dict', t: startedAt, secs: {}, rates: savedRates(), extractTotal: 0, extractDone: 0,
@@ -342,6 +307,7 @@ async function extractFirst(file, myRun) {
     progress: p => {
       if (myRun !== runSeq) return;
       const part = p.done / Math.max(1, p.total);
+      dbgStep('descompactação do .zip', part);   // DEBUG-PROVISORIO
       if (est) { est.extractTotal = p.total; est.extractDone = p.done; }
       last.progress = Math.round(EXTRACT_FROM + EXTRACT_SPAN * part);
       last.step_description = 'Descompactando ' + file.name + (p.name ? ': ' + p.name : '');
@@ -384,9 +350,11 @@ function startWorker(list, handle, name, onDone, mode) {
   addLog(`${list.length} arquivos, ibdata1 de ${fmtSize(ibdataSize)}.`);
   if (est) { est.ibdata = ibdataSize; estPhase('dict'); }
   worker = new Worker('worker.js');
-  worker.onerror = event => { if (myRun === runSeq) fail(event.message || 'Erro ao iniciar o Python no navegador.'); };
+  worker.onerror = event => { dbg(`worker.onerror: ${event.message} (${event.filename}:${event.lineno})`); if (myRun === runSeq) fail(event.message || 'Erro ao iniciar o Python no navegador.'); };   // dbg = DEBUG-PROVISORIO
   worker.onmessage = ({ data }) => {
     if (myRun !== runSeq) return;
+    dbgMsg(data);   // DEBUG-PROVISORIO
+    if (data.dbg) { dbg(data.dbg); return; }   // DEBUG-PROVISORIO
     if (data.log) { addLog(data.log); return; }
     if (data.phase === 'prep') { setPhase(Math.max(last.progress, 2), 'Ligando o Python no navegador...', 'Preparação', null); }
     else if (data.phase === 'dict') { setPhase(DICT_FROM, 'Lendo o dicionário do ibdata1...', 'Dicionário do InnoDB', null); }
@@ -455,6 +423,7 @@ function fail(message) {
   cleanupExtracted();
   cleanupDump();
   addLog(message);
+  dbgFail(message);   // DEBUG-PROVISORIO
   last.state = 'ERROR';
   last.step_description = 'A recuperação falhou.';
   last.task = null; last.item = null;
@@ -480,6 +449,7 @@ function finish(report, blob, name) {
     `${fmtSize(report.sql_bytes)}.` + (report.sha256 ? ` SHA-256 ${report.sha256}` : ` Bancos: ${report.banco}.`));
   saveHistory(name, report);
   draw();
+  dbgFinish(report);   // DEBUG-PROVISORIO
   const warned = Object.values(report.tabelas).some(t => t.status !== 'OK');
   notify('Recuperação concluída', `${name}: ${report.registros.toLocaleString('pt-BR')} registros em ${fmtElapsed(Math.round(report.segundos))}` + (warned ? ', com avisos.' : '.'));
 }
@@ -496,12 +466,14 @@ function cancelRecovery() {
   last.task = null; last.item = null;
   last.step_description = 'Recuperação cancelada.';
   addLog('Recuperação cancelada pelo usuário.');
+  dbg('=== FIM DO LOG (cancelada) ===');   // DEBUG-PROVISORIO
   draw();
 }
 // Fechar ou recarregar a página no meio da recuperação a perderia: o navegador pergunta antes.
-window.addEventListener('beforeunload', e => { if (running() || zipWorker) { e.preventDefault(); e.returnValue = ''; } });
+window.addEventListener('beforeunload', e => { if (running()) { e.preventDefault(); e.returnValue = ''; } });
 
 function addLog(text) {
+  dbg('log: ' + text);   // DEBUG-PROVISORIO
   logs.push(text);
   if (logs.length > 5000) logs.splice(0, logs.length - 5000);
   scheduleDraw();
@@ -575,156 +547,17 @@ function saveBlob(blob, name) {
   setTimeout(() => URL.revokeObjectURL(link.href), 60000);
 }
 function download(type) {
-  if (type === 'sql' && last.blob) saveBlob(last.blob, fileSafe(last.projectName) + (last.multi ? '.zip' : '.sql'));
+  if (type === 'sql' && last.blob) saveBlob(last.blob, fileSafe(last.projectName) + '.zip');
   else if (type === 'report' && last.report) openReportOf(last.report, last.projectName);
 }
 function onGet() { download('sql'); }
 function openReport() { download('report'); }
 
-// ---------- baixar o dump compactado (.zip) ----------
-// O .zip leva o .sql e um LEIA-ME. É montado em fluxo (zip-out-worker.js): o tamanho do dump não é
-// limitado pela memória. No Chrome e no Edge grava direto no arquivo escolhido; nos outros passa pelo disco do navegador.
-let zipWorker = null, zipDir = null, zipSeq = 0;
-// Velocidade da compactação (MB/s): a de um computador comum (rápida) e a de um lento. Só serve para estimar o tempo.
-const ZIP_FAST = 150, ZIP_SLOW = 45;
+// ---------- tempo em texto ----------
 function fmtSpan(seconds) {
   if (seconds < 60) return 'menos de 1 minuto';
   if (seconds < 5400) { const m = Math.max(1, Math.round(seconds / 60)); return m + (m === 1 ? ' minuto' : ' minutos'); }
   return (seconds / 3600).toFixed(1).replace('.', ',') + ' horas';
-}
-function zipEstimate(bytes) {
-  const fast = bytes / (ZIP_FAST * 1048576), slow = bytes / (ZIP_SLOW * 1048576);
-  if (slow < 60) return 'menos de 1 minuto';
-  if (slow < 5400) {                                   // "entre 2 e 7 minutos"
-    const a = Math.max(1, Math.round(fast / 60)), b = Math.max(a, Math.ceil(slow / 60));
-    return a === b ? 'cerca de ' + fmtSpan(slow) : `entre ${a} e ${b} minutos`;
-  }
-  return 'entre ' + fmtSpan(fast) + ' e ' + fmtSpan(slow);
-}
-function openZipModal() {
-  if (!(last.state === 'COMPLETED' && (last.blob || last.handle)) || zipWorker) return;
-  const bytes = last.report ? last.report.sql_bytes : (last.blob ? last.blob.size : 0);
-  $('zipText').innerHTML = `Esta operação <b>pode demorar</b>: o dump de <b>${fmtSize(bytes)}</b> será compactado em <b>.zip</b>. ` +
-    `Tempo estimado: <b>${zipEstimate(bytes)}</b> (depende do seu computador). Não feche a aba até terminar.`;
-  $('zipInfo').textContent = CAN_STREAM ? 'Você escolhe onde salvar o .zip; ele é gravado direto no arquivo.'
-    : `Este navegador guarda o .zip no disco do navegador e baixa no fim: precisa de uns ${fmtSize(bytes * 0.35)} livres.`;
-  $('zipError').textContent = '';
-  $('zipBar').hidden = true;
-  $('zipFill').style.width = '0';
-  $('zipGo').disabled = false;
-  $('zipGo').textContent = 'Gerar .zip';
-  $('zipCancel').textContent = 'Cancelar';
-  $('zipBg').classList.add('open');
-  setTimeout(() => $('zipGo').focus(), 0);
-}
-function closeZipModal() {
-  if (zipWorker) {                                   // fechar no meio = cancelar a compactação
-    if (!confirm('Cancelar a geração do .zip?')) return;
-    zipSeq += 1;
-    zipWorker.terminate();
-    zipWorker = null;
-    cleanupZip();
-    note('Geração do .zip cancelada. O arquivo escolhido pode ter ficado incompleto: apague-o.', true);
-    refreshButtons();
-  }
-  $('zipBg').classList.remove('open');
-}
-async function cleanupZip() {
-  if (!zipDir) return;
-  const dir = zipDir;
-  zipDir = null;
-  const { cleanup } = await import('./extract.js');
-  await cleanup(dir);
-}
-function zipTexts() {
-  const report = last.report || {};
-  const sql = fileSafe(last.projectName) + '.sql';
-  const readme = [
-    'RECUPERAÇÃO DO BANCO ' + (report.banco || last.projectName),
-    '',
-    'Esta pasta tem o dump SQL recuperado (' + sql + ') e este LEIA-ME.',
-    '',
-    'COMO RESTAURAR (precisa do MySQL ou MariaDB):',
-    '  Abra ' + sql + ' no Query Browser (ou no cliente MySQL que preferir) e execute o arquivo inteiro.',
-    '  Ou, num terminal:  mysql -u root -p < "' + sql + '"',
-    '  O dump cria o banco "' + (report.banco || '') + '" e as tabelas, e insere os registros.',
-    '',
-    'CONFERÊNCIA:',
-    '  Tabelas: ' + (report.tabelas ? Object.keys(report.tabelas).length : '-'),
-    '  Registros: ' + (report.registros !== undefined ? report.registros : '-'),
-    '  SHA-256 do .sql: ' + (report.sha256 || '-'),
-    '',
-    'Gerado pelo Recuperador de Banco MySQL (versão navegador) em ' + new Date().toLocaleString('pt-BR') + '.',
-    '',
-  ].join('\r\n');
-  return [{ name: 'LEIA-ME.txt', text: readme }];
-}
-async function startZip() {
-  if (zipWorker) return;
-  $('zipError').textContent = '';
-  // O destino é escolhido AGORA, no clique (o navegador só deixa abrir o seletor de arquivo a partir de um clique).
-  let handle = null;
-  if (CAN_STREAM) {
-    try {
-      handle = await window.showSaveFilePicker({ suggestedName: fileSafe(last.projectName) + '.zip',
-        types: [{ description: 'Arquivo ZIP', accept: { 'application/zip': ['.zip'] } }] });
-    } catch (error) {
-      if (error.name === 'AbortError') return;
-      handle = null;                               // o navegador recusou gravar direto (alguns bloqueiam): passa pelo disco dele e baixa
-      $('zipInfo').textContent = 'Não consegui gravar direto neste local; o arquivo será baixado no fim.';
-    }
-  }
-  let source;
-  try { source = last.blob || await last.handle.getFile(); }
-  catch (error) { $('zipError').textContent = 'Não consegui reabrir o .sql: ' + error.message; return; }
-  if (!handle) {                                   // sem arquivo de destino: confere o espaço do disco do navegador
-    try {
-      const room = await navigator.storage.estimate();
-      if (room.quota && room.quota - room.usage < source.size * 0.35) {
-        $('zipError').textContent = `Falta espaço no navegador: preciso de uns ${fmtSize(source.size * 0.35)} e há ${fmtSize(room.quota - room.usage)} livres. Use o Chrome ou o Edge, ou baixe o .sql.`;
-        return;
-      }
-    } catch (e) { /* sem estimativa: tenta mesmo assim */ }
-  }
-  const extras = last.multi ? [] : zipTexts();
-  const mySeq = ++zipSeq, name = fileSafe(last.projectName);
-  zipDir = handle ? null : tempName('zip');
-  $('zipBar').hidden = false;
-  $('zipGo').disabled = true;
-  $('zipGo').textContent = 'Gerando...';
-  $('zipCancel').textContent = 'Cancelar geração';
-  $('zipInfo').textContent = 'Compactando...';
-  const started = Date.now();
-  zipWorker = new Worker('zip-out-worker.js', { type: 'module' });
-  refreshButtons();
-  const stop = () => { if (zipWorker) zipWorker.terminate(); zipWorker = null; refreshButtons(); };
-  const failZip = message => {
-    stop(); cleanupZip();
-    $('zipError').textContent = message;
-    $('zipGo').disabled = false; $('zipGo').textContent = 'Tentar de novo'; $('zipCancel').textContent = 'Fechar';
-  };
-  zipWorker.onerror = event => { if (mySeq === zipSeq) failZip(event.message || 'Erro ao montar o .zip.'); };
-  zipWorker.onmessage = ({ data }) => {
-    if (mySeq !== zipSeq) return;
-    if (data.progress) {
-      const part = data.progress.done / Math.max(1, data.progress.total);
-      $('zipFill').style.width = Math.round(100 * part) + '%';
-      const elapsed = (Date.now() - started) / 1000;
-      const left = part > 0.02 ? elapsed * (1 - part) / part : null;
-      $('zipInfo').textContent = `${fmtSize(data.progress.done)} de ${fmtSize(data.progress.total)} (${Math.round(100 * part)}%)` +
-        (left === null ? '' : ` · faltam cerca de ${fmtSpan(left)}`);
-    } else if (data.error) {
-      failZip(data.error);
-    } else if (data.done) {
-      const result = data.done.file;
-      stop();
-      if (result) { saveBlob(result, name + '.zip'); setTimeout(cleanupZip, 120000); }
-      $('zipBg').classList.remove('open');
-      notify('.zip pronto', name + '.zip foi gerado.');
-      note('.zip gerado em ' + fmtElapsed(Math.round((Date.now() - started) / 1000)) + (handle ? ': ' + handle.name + '.' : ': veja a pasta de downloads.'));
-    }
-  };
-  zipWorker.postMessage({ file: source, sqlName: fileSafe(last.projectName) + '.sql', extras, handle, dir: zipDir, raw: !!last.multi });
 }
 // O relatório é uma página HTML completa, montada aqui e aberta numa aba nova (o navegador deixa salvá-la).
 function openReportOf(report, title) {
@@ -923,7 +756,11 @@ function drawTables() {
   drawCounts();
   if (currentView !== 'tables') return;
   const all = Object.keys(last.tables);
-  if (!all.length) return;
+  if (!all.length) {   // outra pasta escolhida: some a lista da recuperação anterior
+    $('tblCount').textContent = 'Escolha um grupo no painel ao lado.';
+    $('tblBody').innerHTML = '<tr><td colspan="3" class="empty">Nenhuma tabela ainda.</td></tr>';
+    return;
+  }
   const names = statusFilter ? all.filter(n => statusGroup(last.tables[n]) === statusFilter) : all.slice();
   const dir = rowsSort === 'desc' ? -1 : 1;
   if (rowsSort) names.sort((a, b) => dir * (Number(last.tables[a].rows) - Number(last.tables[b].rows)));

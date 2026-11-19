@@ -466,6 +466,7 @@ function splitRecord(origin: i32, nFields: i32, nNullable: i32): i32 {
 //   (o formato do LOAD DATA), mode 1 = por registro com chave e transação
 function processRecord(origin: i32, mode: i32, nFields: i32, nNullable: i32, nKey: i32, nOut: i32): void {
   if ((pg(origin - 3) & 7) != 0) return;                // não é registro comum (nó interno, etc.)
+  if ((((pg(origin - 4) << 8) | pg(origin - 3)) >> 3) < 2) { nBad++; return; }   // heap 0/1 = infimum/supremum: lixo (igual ao parse_compact)
   let deleted = (pg(origin - 5) & 0x20) != 0;
   let split = splitRecord(origin, nFields, nNullable);
   if (split == R_BAD) { nBad++; return; }

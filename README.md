@@ -134,6 +134,9 @@ Site estático, sem build. Na Vercel: **Add New > Project**, importe este reposi
 sem comando de build e sem pasta de saída. No GitHub Pages: publique a raiz do repositório.
 
 ## O formato rápido (v1.8.2, opcional desde a v1.8.3)
+**Descontinuado na v1.8.7:** a caixa saiu do site, porque o ganho na importação é pequeno demais. O código (`py/load_format.py`, `writeFast` no
+`worker.js`) ficou só para os testes de desenvolvimento (`dev/loaddata/`, `?auto=1&fmt=load`).
+
 Com a caixa **Formato rápido de importação (LOAD DATA)** marcada (vem desmarcada), a recuperação entrega sempre um **`.zip`**, mesmo com um banco só, e
 em vez de um `.sql` cheio de `INSERT` ele leva, por banco: `estrutura.sql` (DROP + CREATE TABLE sem os índices secundários), `dados/*.txt` (as linhas,
 no mesmo texto de um `INSERT`: `(1,'abc',NULL)`), `carregar.sql` (um `LOAD DATA LOCAL INFILE` por arquivo), `indices.sql` (os índices, criados com os
@@ -240,7 +243,7 @@ GPL-2.0 (arquivo `LICENSE`). `py/innodb_carver.py` porta a lógica de formato do
 mantêm as licenças delas (arquivos `LICENSE` em cada pasta).
 
 ## O .zip com os .sql
-Depois da recuperação, **Baixar .zip** gera (aos pedaços, `zip-out-worker.js`) um `.zip` com o `.sql` e um LEIA-ME (sem `.bat`: o `.sql` se importa no Query Browser ou no cliente `mysql`); com vários bancos o `.zip` pronto é copiado. **O site não gera a pasta `data`**: o navegador não tem
+O resultado é sempre **um único `.zip`** (v1.8.7), montado em fluxo durante a recuperação, com um `.sql` por banco e um LEIA-ME (sem `.bat`: o `.sql` se importa no Query Browser ou no cliente `mysql`). **O site não gera a pasta `data`**: o navegador não tem
 servidor MySQL e não existe MySQL 5.5 com InnoDB para WebAssembly. Para a pasta `data`, use o Recuperador de desktop (`programa/`) com o `.sql`:
 ele importa num MySQL 5.5 temporário e entrega a `data` em `.zip`/`.rar`.
 
