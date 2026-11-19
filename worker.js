@@ -306,6 +306,7 @@ function extras(reports) {
     "RECUPERAÇÃO DOS BANCOS DA PASTA DATA",
     "",
     "Este .zip tem um dump SQL por banco e este LEIA-ME.",
+    "Os .sql seguem o formato de backup do MySQL Administrator (o mesmo que o sistema gera), então a restauração é a de um backup comum.",
     "",
     "COMO RESTAURAR (precisa do MySQL ou MariaDB):",
     "  Abra cada .sql no Query Browser (ou no cliente MySQL que preferir) e execute o arquivo inteiro, um banco por vez.",

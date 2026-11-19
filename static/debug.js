@@ -102,26 +102,37 @@ function dbgFail(message) {
 // Lê um arquivo (ou parte de um .zip) por pedaços: conta linhas, acha a maior, e onde começa e quantos INSERT tem cada tabela.
 function dbgScanner() {
   const decoder = new TextDecoder('utf-8');
-  const s = { bytes: 0, lines: 0, maxLine: 0, maxLineNo: 0, over: 0, overPacket: 0, overExamples: [], inserts: {}, drops: {} };
-  let lineLen = 0, head = '';
+  // Um INSERT ocupa várias linhas (um registro por linha) e termina na linha que acaba em ";": o tamanho do comando é a soma delas.
+  const s = { bytes: 0, lines: 0, maxLine: 0, maxLineNo: 0, maxStmt: 0, maxStmtNo: 0, stmts: 0, over: 0, overPacket: 0, overExamples: [], inserts: {}, drops: {} };
+  let lineLen = 0, head = '', lastByte = 0, inStmt = false, stmtLen = 0, stmtStart = 0, stmtHead = '';
   const endLine = () => {
     s.lines += 1;
     if (lineLen > s.maxLine) { s.maxLine = lineLen; s.maxLineNo = s.lines; }
-    if (lineLen > 1000000) {
-      s.over += 1;
-      if (lineLen > 1048576) s.overPacket += 1;
-      if (s.overExamples.length < 5) s.overExamples.push(`linha ${s.lines} (${lineLen} bytes) ${head.slice(0, 60)}`);
-    }
     let m;
-    if (head.startsWith('INSERT INTO `') && (m = /^INSERT INTO `([^`]+)`/.exec(head))) s.inserts[m[1]] = (s.inserts[m[1]] || 0) + 1;
-    else if (head.startsWith('DROP TABLE IF EXISTS `') && (m = /^DROP TABLE IF EXISTS `([^`]+)`/.exec(head))) s.drops[m[1]] = s.lines;
-    lineLen = 0; head = '';
+    if (head.startsWith('INSERT INTO `')) {
+      inStmt = true; stmtLen = 0; stmtStart = s.lines; stmtHead = head;
+      if ((m = /^INSERT INTO `([^`]+)`/.exec(head))) s.inserts[m[1]] = (s.inserts[m[1]] || 0) + 1;
+    } else if (head.startsWith('DROP TABLE IF EXISTS `') && (m = /^DROP TABLE IF EXISTS `([^`]+)`/.exec(head))) s.drops[m[1]] = s.lines;
+    if (inStmt) {
+      stmtLen += lineLen + 1;
+      if (lastByte === 59) {   // ";" fecha o comando
+        inStmt = false; s.stmts += 1;
+        if (stmtLen > s.maxStmt) { s.maxStmt = stmtLen; s.maxStmtNo = stmtStart; }
+        if (stmtLen > 1000000) {
+          s.over += 1;
+          if (stmtLen > 1048576) s.overPacket += 1;
+          if (s.overExamples.length < 5) s.overExamples.push(`comando na linha ${stmtStart} (${stmtLen} bytes) ${stmtHead.slice(0, 60)}`);
+        }
+      }
+    }
+    lineLen = 0; head = ''; lastByte = 0;
   };
   s.push = chunk => {
     let pos = 0;
     while (pos < chunk.length) {
       const nl = chunk.indexOf(10, pos), end = nl < 0 ? chunk.length : nl;
       if (lineLen < 96 && end > pos) head += decoder.decode(chunk.subarray(pos, Math.min(end, pos + 96 - lineLen)));
+      if (end > pos) lastByte = chunk[end - 1];
       lineLen += end - pos;
       if (nl < 0) break;
       endLine();
@@ -138,8 +149,8 @@ const dbgPad = (value, width) => String(value).padEnd(width);
 // O que a leitura do arquivo achou, contra o que o motor disse. tables = {tabela: {rows, status}} do banco `db`.
 function dbgScanReport(sc, label, expectedBytes, tables, db) {
   dbg(`${label}: ${sc.bytes} bytes no arquivo; o motor emitiu ${expectedBytes} -> ${sc.bytes === expectedBytes ? 'IGUAL' : 'DIFERENTE !!!'}`);
-  dbg(`${label}: ${sc.lines} linhas | maior linha ${sc.maxLine} bytes (linha ${sc.maxLineNo}) | linhas acima de 1.000.000 bytes: ${sc.over} | ` +
-      `acima de 1.048.576 (derruba o MySQL padrão): ${sc.overPacket}`);
+  dbg(`${label}: ${sc.lines} linhas | maior linha ${sc.maxLine} bytes (linha ${sc.maxLineNo}) | ${sc.stmts} comandos INSERT, o maior com ${sc.maxStmt} bytes (linha ${sc.maxStmtNo}) | ` +
+      `comandos acima de 1.000.000 bytes: ${sc.over} | acima de 1.048.576 (derruba o MySQL padrão): ${sc.overPacket}`);
   sc.overExamples.forEach(x => dbg('  ' + x));
   dbg(`${label}: MAPA DAS TABELAS (linha do DROP TABLE no arquivo | INSERTs no arquivo, e os que o motor contou | linhas esperadas | status)`);
   let totalInserts = 0, diverge = 0;

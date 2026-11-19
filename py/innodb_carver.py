@@ -1097,26 +1097,45 @@ def sql_literal(value):
 INSERT_BYTES = 1_000_000
 
 
-# FAZ: transforma linhas em comandos INSERT (até 500 linhas e INSERT_BYTES bytes por comando, com a lista de colunas, como o
-#   mysqldump --complete-insert) e devolve em bytes utf8. stats["oversized"] conta as linhas que sozinhas passam do teto.
-def rows_to_sql(table_name, columns, rows, batch=500, stats=None):
-    """INSERTs com lista de colunas (como mysqldump --complete-insert), em bytes utf8."""
+# O MySQL Administrator fecha cada INSERT perto de 64 KB: o dump fica no mesmo padrão do backup do sistema.
+INSERT_TARGET = 64_000
+
+
+# FAZ: o começo de um INSERT no padrão do MySQL Administrator: lista de colunas sem espaços e os registros embaixo, um por linha.
+def insert_head(table_name, columns):
+    cols = ",".join(f"`{c}`" for c in columns)
+    return f"INSERT INTO `{table_name}` ({cols}) VALUES\n ".encode("utf8")
+
+
+# FAZ: junta blocos de registros ("(...)" ou vários "(...),\n (...)") num comando INSERT. Fecha o comando ao passar de INSERT_TARGET bytes
+#   e nunca deixa passar de INSERT_BYTES. Devolve a lista de comandos (bytes, sem quebra de linha no fim).
+def pack_inserts(head, blocks, batch=None):
+    out, group, size = [], [], len(head)
+    for block in blocks:
+        if group and ((batch and len(group) >= batch) or size + len(block) + 3 > INSERT_BYTES):
+            out.append(head + b",\n ".join(group) + b";")
+            group, size = [], len(head)
+        group.append(block)
+        size += len(block) + 3
+        if size >= INSERT_TARGET:
+            out.append(head + b",\n ".join(group) + b";")
+            group, size = [], len(head)
+    if group:
+        out.append(head + b",\n ".join(group) + b";")
+    return out
+
+
+# FAZ: transforma linhas em comandos INSERT no padrão do MySQL Administrator (veja pack_inserts) e devolve em bytes utf8.
+#   stats["oversized"] conta as linhas que sozinhas passam do teto; stats["inserts"] e stats["max_insert"], os comandos e o maior deles.
+def rows_to_sql(table_name, columns, rows, batch=None, stats=None):
+    """INSERTs com lista de colunas, um registro por linha, de até ~64 KB, como o backup do MySQL Administrator."""
     if not rows:
         return b""
-    cols = ", ".join(f"`{c}`" for c in columns)
-    head = f"INSERT INTO `{table_name}` ({cols}) VALUES ".encode("utf8")
-    out, group, size = [], [], len(head)
-    for row in rows:
-        text = ("(" + ",".join(sql_literal(v) for v in row) + ")").encode("utf8")
-        if group and (len(group) >= batch or size + len(text) + 1 > INSERT_BYTES):
-            out.append(head + b",".join(group) + b";")
-            group, size = [], len(head)
-        if stats is not None and len(head) + len(text) + 1 > INSERT_BYTES:
-            stats["oversized"] = stats.get("oversized", 0) + 1
-        group.append(text)
-        size += len(text) + 1
-    out.append(head + b",".join(group) + b";")
-    if stats is not None:   # quantos comandos saíram e o maior deles (a aba Depuração mostra; o teto é INSERT_BYTES)
+    head = insert_head(table_name, columns)
+    blocks = [("(" + ",".join(sql_literal(v) for v in row) + ")").encode("utf8") for row in rows]
+    out = pack_inserts(head, blocks, batch)
+    if stats is not None:
+        stats["oversized"] = stats.get("oversized", 0) + sum(1 for b in blocks if len(head) + len(b) + 1 > INSERT_BYTES)
         stats["inserts"] = stats.get("inserts", 0) + len(out)
         stats["max_insert"] = max(stats.get("max_insert", 0), max(map(len, out)))
     return b"\n".join(out)

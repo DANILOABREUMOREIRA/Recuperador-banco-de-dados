@@ -31,14 +31,60 @@ from stream_carver import stream_table
 # Mesmos valores do programa de desktop (engine_common.py / engine_objects.py), para o dump sair igual.
 HIDDEN_SCHEMAS = {"mysql", "performance_schema", "information_schema", "test"}
 VARIANT_SUFFIX = re.compile(r"_\d$")   # cópias do chkdsk: tabela_0, tabela_1
-SQL_HEADER = (
+# O dump segue o padrão do backup do sistema (MySQL Administrator dump 1.4): é o que o MySQL Administrator e o Query Browser reconhecem
+#   ao restaurar. Cabeçalho, comentários de cada tabela, DISABLE/ENABLE KEYS e rodapé são os mesmos dele.
+MA_HEADER = (
+    "-- MySQL Administrator dump 1.4\n"
+    "--\n"
+    "-- ------------------------------------------------------\n"
+    "-- Server version\t5.5.38\n"
+    "\n\n"
+    "/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;\n"
+    "/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;\n"
+    "/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;\n"
     "/*!40101 SET NAMES utf8 */;\n"
-    "SET FOREIGN_KEY_CHECKS=0;\n"
-    "SET UNIQUE_CHECKS=0;\n"
-    "SET SQL_MODE='NO_AUTO_VALUE_ON_ZERO';\n"
-    "CREATE DATABASE IF NOT EXISTS `{db}`;\n"
-    "USE `{db}`;\n\n"
+    "\n"
+    "/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;\n"
+    "/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;\n"
+    "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n"
+    "\n\n"
+    "--\n"
+    "-- Create schema {db}\n"
+    "--\n"
+    "\n"
+    "CREATE DATABASE IF NOT EXISTS {db};\n"
+    "USE {db};\n"
+    "\n"
 )
+SQL_FOOTER = (
+    "\n\n"
+    "/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n"
+    "/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;\n"
+    "/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;\n"
+    "/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;\n"
+    "/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;\n"
+    "/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;\n"
+    "/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;\n"
+)
+
+
+# FAZ: o cabeçalho do dump. O nome do banco vai sem aspas, como o MySQL Administrator escreve; com aspas só se tiver caractere especial.
+def sql_header(db):
+    name = db if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", db) else "`" + db.replace("`", "``") + "`"
+    return MA_HEADER.format(db=name)
+
+
+# FAZ: os comentários que o MySQL Administrator escreve em volta de cada tabela.
+def table_open(name):
+    return f"--\n-- Definition of table `{name}`\n--\n\n"
+
+
+def data_open(name):
+    return f"\n--\n-- Dumping data for table `{name}`\n--\n\n/*!40000 ALTER TABLE `{name}` DISABLE KEYS */;\n"
+
+
+def data_close(name):
+    return f"/*!40000 ALTER TABLE `{name}` ENABLE KEYS */;\n\n\n"
 OBJECT_HEADER = "-- Objetos do banco (views, triggers, rotinas e eventos)\n"
 # 4096 folhas de 16 KB = 64 MB. O pico de memória do carve() é de 5 a 9 vezes o tamanho da tabela: até 64 MB cabe com
 #   folga nos 2 GB do navegador; acima disso a tabela é lida em lotes.
@@ -202,7 +248,7 @@ class Recovery:
         if self.debug:   # DEBUG-PROVISORIO
             self.debug(f"PLANO banco={self.db} tabelas={len(self.tables)} so_no_dicionario={len(dict_only)} restauradas={len(self.restored)} "
                        f"views={len(self.views)} formato={'LOAD DATA' if self.load else 'INSERT'}")
-        return self._emit(SQL_HEADER.format(db=self.db).encode("utf8"))
+        return self._emit(sql_header(self.db).encode("utf8"))
 
     # FAZ: tabelas com .frm mas sem linha no dicionário: casa o .frm com as páginas (dictionary_rebuild). É
     #   redundância: uma falha aqui só gera aviso.
@@ -321,7 +367,8 @@ class Recovery:
             self.status[name] = {"rows": 0, "status": "AVISO",
                                  "note": "Estrutura recriada pelo .frm, mas os dados não foram localizados nas páginas."}
             self.warn(f"Tabela {name}: estrutura recriada, dados não localizados.")
-            yield self._structure(name, f"DROP TABLE IF EXISTS `{name}`;\n{hint};\n\n\n")
+            yield self._structure(name, f"DROP TABLE IF EXISTS `{name}`;\n{hint};\n\n\n" if self.load else
+                                  table_open(name) + f"DROP TABLE IF EXISTS `{name}`;\n{hint};\n" + data_open(name) + data_close(name))
             return
 
         ddl = ddl_from_dictionary(tdef, hint)
@@ -331,13 +378,14 @@ class Recovery:
         self._cur_how = ("grande" if big else "pequena") + "/" + ("kernel" if kernel_bridge.available() and tdef.compact else "python") + \
             ("/so_dicionario" if dict_only else "")
         if big:
-            yield self._structure(name, f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n", ddl)
+            structure = f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n"
+            yield self._structure(name, structure if self.load else table_open(name) + structure + data_open(name), ddl)
             stats = {}
             try:
                 if kernel_bridge.available():
                     # no navegador, o kernel WebAssembly converte as páginas e já entrega o texto SQL
                     for columns, count, pieces in kernel_paths.stream_sql(self.carver, full, ddl_hint=hint, progress=self.on_pages, stats=stats,
-                                                                          lines=self.load):
+                                                                          lines=True):
                         rows += count
                         if self.load:
                             self._load_columns(name, tdef, columns, ddl)
@@ -369,7 +417,7 @@ class Recovery:
             if stats.get("loose_pages"):
                 info += f"; {stats['loose_pages']} página(s) fora da árvore (liberadas) não lidas"
             if not self.load:
-                yield self._emit(b"\n")
+                yield self._emit(data_close(name).encode("utf8"))
         else:
             data = b""
             try:
@@ -395,7 +443,8 @@ class Recovery:
                 self._structure(name, f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n", ddl)
                 yield self._emit(data)
             else:
-                yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8") + data + b"\n\n")
+                yield self._emit((table_open(name) + f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n" + data_open(name)).encode("utf8")
+                                 + (data + b"\n" if data else b"") + data_close(name).encode("utf8"))
         self._cur_stats = stats
         cut = getattr(self.carver, "external_damaged", 0) - blobs_before
         if cut:
@@ -539,7 +588,7 @@ class Recovery:
         self.bad_pages = self.carver.space.bad_pages
         if not self.shared_carver:   # um carver emprestado (vários bancos na pasta) é fechado por quem o abriu
             self.carver.close()
-        out = self._emit(tail)
+        out = self._emit(tail if self.load else tail + SQL_FOOTER.encode("utf8"))
         if self.debug:   # DEBUG-PROVISORIO
             self.debug(f"FIM banco={self.db} bytes_emitidos={self.sql_bytes} sha256={self.sha.hexdigest()} fks={self.objects['chaves_estrangeiras']} "
                        f"views={self.objects['views']} triggers={self.objects['triggers']} paginas_doublewrite={self.repaired} avisos={len(self.warnings)}")

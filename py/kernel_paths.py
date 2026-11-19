@@ -13,11 +13,10 @@ kernel_paths.py - Os dois caminhos de leitura de tabela que usam o kernel WebAss
 import struct
 
 import kernel_bridge
-from innodb_carver import (FIL_PAGE_LSN, INSERT_BYTES, PAGE_N_RECS, CarverError, decode_value, iter_records, page_structure_error, sql_literal, u16,
-                           u64)
+from innodb_carver import (FIL_PAGE_LSN, INSERT_BYTES, PAGE_N_RECS, CarverError, decode_value, insert_head, iter_records, pack_inserts,
+                           page_structure_error, sql_literal, u16, u64)
 from stream_carver import BATCH_ROWS, leaf_runs, live_leaves
 
-INSERT_ROWS = 500          # linhas por INSERT, como em innodb_carver.rows_to_sql (o teto de bytes, INSERT_BYTES, também vem de lá)
 RECORD_ERRORS = (CarverError, IndexError, struct.error, ValueError)
 
 
@@ -55,28 +54,20 @@ def key_bytes(raw, n_key):
     return bytes(out)
 
 
-# FAZ: junta pedaços (quantidade, bytes) em comandos INSERT de até INSERT_ROWS linhas / INSERT_BYTES bytes (o comando inteiro).
-#   stats["oversized"] conta as linhas que sozinhas passam do teto (só importam com o max_allowed_packet do servidor aumentado).
+# FAZ: junta pedaços (quantidade, bytes) em comandos INSERT no padrão do MySQL Administrator (innodb_carver.pack_inserts): registros um por
+#   linha, comando de ~64 KB. Um pedaço pode trazer vários registros terminados por quebra de linha (modo "linhas" do kernel): eles
+#   viram "(...),\n (...)". stats["oversized"] conta as linhas que sozinhas passam do teto (só importam com o max_allowed_packet do
+#   servidor aumentado); stats["inserts"] e stats["max_insert"], os comandos e o maior deles.
 def inserts(table_name, columns, pieces, stats=None):
-    head = f"INSERT INTO `{table_name}` ({', '.join(f'`{c}`' for c in columns)}) VALUES ".encode("utf8")
-    out, group, rows, size = [], [], 0, len(head)
-    for count, text in pieces:
-        if group and size + len(text) + 1 > INSERT_BYTES:
-            out.append(head + b",".join(group) + b";")
-            group, rows, size = [], 0, len(head)
-        if stats is not None and count == 1 and len(head) + len(text) + 1 > INSERT_BYTES:
-            stats["oversized"] = stats.get("oversized", 0) + 1
-        group.append(text)
-        rows += count
-        size += len(text) + 1
-        if rows >= INSERT_ROWS:
-            out.append(head + b",".join(group) + b";")
-            group, rows, size = [], 0, len(head)
-    if group:
-        out.append(head + b",".join(group) + b";")
-    if stats is not None and out:   # quantos comandos saíram e o maior deles (a aba Depuração mostra; o teto é INSERT_BYTES)
-        stats["inserts"] = stats.get("inserts", 0) + len(out)
-        stats["max_insert"] = max(stats.get("max_insert", 0), max(map(len, out)))
+    head = insert_head(table_name, columns)
+    blocks = [bytes(text).rstrip(b"\n").replace(b"\n", b",\n ") for _, text in pieces]
+    out = pack_inserts(head, blocks)
+    if stats is not None:
+        stats["oversized"] = stats.get("oversized", 0) + sum(1 for (count, _), b in zip(pieces, blocks)
+                                                            if count == 1 and len(head) + len(b) + 1 > INSERT_BYTES)
+        if out:
+            stats["inserts"] = stats.get("inserts", 0) + len(out)
+            stats["max_insert"] = max(stats.get("max_insert", 0), max(map(len, out)))
     return b"\n".join(out)
 
 
