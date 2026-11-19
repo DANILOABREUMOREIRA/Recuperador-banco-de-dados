@@ -29,6 +29,9 @@ onmessage = async ({ data }) => {
     // streamPages (só nos testes de desenvolvimento) troca o limite de folhas a partir do qual a tabela é lida em lotes.
     pyodide.globals.set("stream_pages", data.streamPages === undefined ? null : data.streamPages);
     pyodide.runPython("import json, web_driver, kernel_bridge");
+    // Andamento da varredura do ibdata1 (a barra fina da etapa do dicionário): o Python avisa a cada 32 MB lidos.
+    pyodide.globals.set("js_scan", (done, total) => postMessage({ scan: { done: done * 16384, total: total * 16384 } }));
+    pyodide.runPython("import innodb_carver\ninnodb_carver.SCAN_PROGRESS = js_scan");
     // O kernel WebAssembly acelera a leitura das tabelas. Se não carregar (ou se a tela pediu ?semkernel=1), o Python faz tudo
     //   sozinho, do jeito antigo e mais lento, com o mesmo resultado.
     if (data.noKernel) {

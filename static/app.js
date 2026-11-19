@@ -412,6 +412,11 @@ function startWorker(list, handle, name, onDone, mode) {
       last.item = { label: data.tableStart.name, percent: null, detail: '' };
       scheduleDraw();
     }
+    else if (data.scan) {   // varredura do ibdata1: a barra fina mostra o quanto já foi lido do arquivo
+      const part = data.scan.done / Math.max(1, data.scan.total);
+      last.item = { label: `${fmtSize(data.scan.done)} lidos do ibdata1`, percent: Math.round(100 * part), detail: 'de ' + fmtSize(data.scan.total) };
+      scheduleDraw();
+    }
     else if (data.pages) {
       const part = data.pages.done / Math.max(1, data.pages.total);
       if (est) est.curPart = part;

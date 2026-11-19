@@ -159,6 +159,9 @@ No navegador, cada leitura de 16 KB do arquivo (WORKERFS) é uma chamada lenta. 
 feita em blocos de 1 MB quando é sequencial (`py/bigfile.py`, que antes só servia para arquivos de mais de 2 GB). Num banco de 460 MB de `ibdata1`:
 a recuperação foi de 81 s para 29 s (`.sql`) e a leitura do dicionário de 18 s para 4 s, com o mesmo resultado (mesmo SHA-256).
 
+### Barra fina na etapa do dicionário (v1.8.5)
+Na etapa "Dicionário do InnoDB" a barra fina mostra o quanto do `ibdata1` já foi varrido (à esquerda o lido, à direita o total e a porcentagem). O Python avisa a cada 32 MB (`innodb_carver.SCAN_PROGRESS`).
+
 ## Estrutura
 
 ```

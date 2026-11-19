@@ -44,6 +44,11 @@ from bigfile import open_rb
 from mysql_codec import decode_newdecimal, format_date, format_datetime, format_time
 from page_health import FIL_PAGE_INDEX, FIL_PAGE_LSN, FIL_PAGE_OFFSET, FIL_PAGE_SPACE_ID, FIL_PAGE_TYPE, PAGE_SIZE
 
+# SCAN_PROGRESS: função opcional (páginas varridas, total de páginas), chamada de tempos em tempos na varredura do ibdata1. O navegador a
+#   usa para a barra fina do andamento; fora dele fica None.
+SCAN_PROGRESS = None
+SCAN_PROGRESS_EVERY = 2048   # páginas (32 MB) entre uma chamada e outra
+
 # FIL_NULL: valor 'nulo' dos números de página (0xFFFFFFFF): 'não há página anterior/próxima'.
 FIL_NULL = 0xFFFFFFFF
 
@@ -328,7 +333,10 @@ class Tablespace:
         dblwr = page_health.doublewrite_page_numbers(self.f, self.n_pages)  # cópias de outras páginas: não são páginas daqui
         self.f.seek(0)
         # Lê as páginas uma a uma, do começo ao fim do arquivo.
+        report = SCAN_PROGRESS if os.path.basename(self.path).lower().startswith("ibdata") else None
         for page_no in range(self.n_pages):
+            if report and page_no % SCAN_PROGRESS_EVERY == 0:
+                report(page_no, self.n_pages)
             head = self.f.read(PAGE_SIZE)
             if len(head) < PAGE_SIZE:
                 break
@@ -347,6 +355,8 @@ class Tablespace:
             self.page_total[index_id] = self.page_total.get(index_id, 0) + 1
             if u16(head, PAGE_LEVEL) == 0:
                 self.leaf_pages.setdefault(index_id, []).append(page_no)
+        if report:
+            report(self.n_pages, self.n_pages)
 
     # FAZ: devolve o index_id da página raiz (a 3, num .ibd) ou None se ela não for uma página de índice válida.
     def root_index_id(self, root_page=FSP_IBD_ROOT_PAGE):
