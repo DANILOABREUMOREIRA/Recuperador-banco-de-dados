@@ -7,6 +7,7 @@ de arquivos do próprio Pyodide (FS.read, em JavaScript), que usa números de 64
 com seek/read/close, igual a um arquivo comum.
 """
 import os
+import sys
 
 LIMIT = 2 ** 31 - 2 ** 22      # a partir daqui o arquivo comum não é seguro no WebAssembly
 READ_AHEAD = 1 << 20           # leitura sequencial: lê 1 MB de uma vez
@@ -69,8 +70,9 @@ class BigFile:
 
 
 def open_rb(path):
-    """open(path, "rb"), ou um BigFile se for o Pyodide e o arquivo passar de 2 GB."""
-    if os.path.getsize(path) >= LIMIT:
+    """open(path, "rb"), ou um BigFile se for o Pyodide: lá ele serve para os arquivos de mais de 2 GB e, nos menores, para ler 1 MB de uma vez
+    na leitura em sequência (no navegador cada leitura de 16 KB do disco é uma chamada lenta; o ibdata1 é varrido página por página)."""
+    if sys.platform == "emscripten" or os.path.getsize(path) >= LIMIT:
         try:
             return BigFile(path)
         except ImportError:   # Python comum (64 bits): o arquivo normal serve

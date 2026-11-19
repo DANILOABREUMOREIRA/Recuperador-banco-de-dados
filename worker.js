@@ -5,7 +5,7 @@ importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
 importScripts("kernel.js");   // define loadKernel: o laço quente (ler registros e escrever o SQL) compilado para WebAssembly
 
 const MODULES = ["innodb_carver", "page_health", "mysql_codec", "frm_parser", "dictionary_rebuild", "stream_carver", "bigfile", "lost_tables",
-  "kernel_bridge", "kernel_paths", "web_driver"];
+  "kernel_bridge", "kernel_paths", "load_format", "web_driver"];
 
 // Recebe { files: [{name: "ibdata1" | "banco/tabela.frm", data: File}], handle: FileSystemFileHandle | null,
 //   dumpDir } e avisa a tela do que acontece: {phase}, {log}, {planned}, {tableStart}, {pages}, {table}, {done} ou {error}.
@@ -45,8 +45,9 @@ onmessage = async ({ data }) => {
       }
     }
     const databases = JSON.parse(pyodide.runPython('json.dumps(list(web_driver.list_databases("/data")))'));
-    if (databases.length > 1) {
-      const result = await recoverMany(pyodide, data, databases);
+    // Formato rápido (data.mode === "load"), mesmo com um banco só, e vários bancos saem num .zip; o formato comum de um banco só é um .sql.
+    if (databases.length > 1 || data.mode === "load") {
+      const result = await recoverMany(pyodide, data, databases, data.mode === "load");
       postMessage({ done: result.report, blob: result.blob, heapMB: Math.round(pyodide._module.HEAPU8.length / 1048576) });
       return;
     }
@@ -109,7 +110,7 @@ async function opfsFile(dir, name) {
 }
 
 // VÁRIOS bancos na pasta: recupera todos, um .sql por banco, direto para dentro de um .zip.
-async function recoverMany(pyodide, data, databases) {
+async function recoverMany(pyodide, data, databases, load) {
   const zip = await import("./vendor/zip/zip.min.js");
   zip.configure({ useWebWorkers: false });   // este já é um worker
   const started = Date.now();
@@ -126,13 +127,16 @@ async function recoverMany(pyodide, data, databases) {
   const writer = new zip.ZipWriter(destination, { zip64: true });   // o tamanho de cada .sql só se sabe no fim
 
   postMessage({ phase: "dict" });
-  postMessage({ log: `${databases.length} bancos na pasta: ${databases.join(", ")}. Todos serão recuperados, num .zip.` });
+  postMessage({ log: databases.length > 1 ? `${databases.length} bancos na pasta: ${databases.join(", ")}. Todos serão recuperados, num .zip.`
+    : `Formato rápido: o .zip leva as linhas em arquivos de texto, que o MySQL carrega com LOAD DATA.` });
+  pyodide.globals.set("load_mode", !!load);
   pyodide.runPython("carver, found, databases = web_driver.prepare_all('/data', js_log)\nrecoveries = {}");
+  postMessage({ log: `Dicionário e tabelas perdidas: ${((Date.now() - started) / 1000).toFixed(1)} s.` });
   const all = JSON.parse(pyodide.runPython("json.dumps(databases)"));   // inclui _sem_banco, se o dicionário achou tabelas sem dono
   const plans = [];
   for (const db of all) {
     pyodide.globals.set("db_name", db);
-    pyodide.runPython('recoveries[db_name] = web_driver.recovery_for("/data", db_name, carver, found, js_log, stream_pages)');
+    pyodide.runPython('recoveries[db_name] = web_driver.recovery_for("/data", db_name, carver, found, js_log, stream_pages, \'load\' if load_mode else \'sql\')');
     const recovery = pyodide.runPython("recoveries[db_name]");
     recovery.on_pages = (done, total) => postMessage({ pages: { done, total } });
     const header = recovery.plan();   // cada banco lista as tabelas dele; o cabeçalho do .sql espera a vez do banco
@@ -144,8 +148,16 @@ async function recoverMany(pyodide, data, databases) {
 
   const reports = {};
   let counter = 0;
+  const dirs = [];
   for (const plan of plans) {
     const { db, recovery } = plan;
+    if (load) {
+      counter = await writeFast(zip, writer, plan, labels, counter);
+      dirs.push(safeName(db));
+      reports[db] = JSON.parse(recovery.report());
+      postMessage({ log: `${db}: ${reports[db].registros.toLocaleString("pt-BR")} registros em ${Object.keys(reports[db].tabelas).length} tabelas.` });
+      continue;
+    }
     const stream = new TransformStream();
     const adding = writer.add(`${db}.sql`, stream.readable);
     let addError = null;
@@ -173,11 +185,109 @@ async function recoverMany(pyodide, data, databases) {
 
   postMessage({ phase: "objects" });
   const report = combine(reports, (Date.now() - started) / 1000);
-  for (const extra of extras(reports)) await writer.add(extra.name, new zip.TextReader(extra.text));
+  for (const extra of load ? fastExtras(reports, dirs) : extras(reports)) await writer.add(extra.name, new zip.TextReader(extra.text));
   postMessage({ phase: "close" });
   await writer.close();
   pyodide.runPython("carver.close()");
   return { report, blob: file ? await file.handle.getFile() : null };
+}
+
+const safeName = (text) => text.replace(/[^A-Za-z0-9_.-]/g, "_");
+const PART_BYTES = 256 * 1048576;   // o mesmo de load_format.PART_BYTES: um arquivo de dados é cortado perto disto
+
+// FORMATO RÁPIDO de UM banco: as linhas de cada tabela vão para arquivos dados/*.txt dentro do .zip (cortados em PART_BYTES) e a
+// estrutura, os LOAD DATA, os índices, os objetos e a conferência saem como .sql, no fim (são pequenos e ficam na memória).
+async function writeFast(zip, writer, plan, labels, counter) {
+  const { db, recovery } = plan;
+  const dir = safeName(db);
+  for (let index = 0; index < plan.tables.length; index++, counter++) {
+    postMessage({ tableStart: { index: counter, total: labels.length, name: labels[counter] } });
+    const tableStarted = Date.now();
+    recovery.begin_table(index);
+    const parts = [];
+    let out = null, adding = null, failure = null, written = 0;
+    const closePart = async () => {
+      if (!out) return;
+      await out.close();
+      await adding;
+      if (failure) throw failure;
+      out = null;
+    };
+    for (let chunk = recovery.next_chunk(); chunk !== undefined; chunk = recovery.next_chunk()) {
+      const bytes = chunk.toJs();
+      chunk.destroy();
+      if (!bytes.length) continue;
+      if (!out || written >= PART_BYTES) {
+        await closePart();
+        const name = `${dir}/dados/${String(index).padStart(4, "0")}_${safeName(plan.tables[index])}.${String(parts.length).padStart(3, "0")}.txt`;
+        parts.push(name);
+        const stream = new TransformStream();
+        failure = null;
+        adding = writer.add(name, stream.readable);
+        adding.catch((e) => { failure = e; });
+        out = stream.writable.getWriter();
+        written = 0;
+      }
+      await out.write(bytes);
+      written += bytes.length;
+    }
+    await closePart();
+    recovery.table_load_sql(index, JSON.stringify(parts));
+    if (Date.now() - tableStarted > 3000) postMessage({ log: `Tabela ${labels[counter]}: ${((Date.now() - tableStarted) / 1000).toFixed(1)} s.` });
+    postMessage({ table: { ...JSON.parse(recovery.info(index)), name: labels[counter] } });
+  }
+  recovery.finish().destroy();
+  const files = JSON.parse(recovery.load_files());
+  for (const [name, text] of Object.entries(files)) await writer.add(`${dir}/${name}`, new zip.TextReader(text));
+  return counter;
+}
+
+// LEIA-ME, restaurar.sql e restaurar.bat do .zip no formato rápido.
+function fastExtras(reports, dirs) {
+  const lines = Object.entries(reports).map(([db, r]) => `  ${db}: ${Object.keys(r.tabelas).length} tabelas, ${r.registros} registros`);
+  const readme = [
+    "RECUPERAÇÃO DOS BANCOS DA PASTA DATA (formato rápido)",
+    "",
+    "Este .zip não traz um .sql com INSERTs: traz as linhas em arquivos de texto (pasta dados de cada banco) que o MySQL carrega com LOAD DATA,",
+    "o que é mais rápido, e os índices secundários são criados no fim, com os dados já dentro.",
+    "",
+    "COMO RESTAURAR (precisa do MySQL ou MariaDB ligado e do comando mysql no PATH):",
+    "  1. Extraia o .zip numa pasta (não rode de dentro do .zip).",
+    "  2. Dê dois cliques em restaurar.bat, informe o usuário e a senha do MySQL quando ele pedir.",
+    "     Ou, num terminal, dentro da pasta extraída:  mysql -u root -p --local-infile=1 < restaurar.sql",
+    "",
+    "O QUE ELE FAZ, banco por banco (os comandos estão em restaurar.sql):",
+    "  estrutura.sql  apaga (DROP TABLE) e recria as tabelas, sem os índices secundários.",
+    "  carregar.sql   carrega as linhas de dados/*.txt (LOAD DATA LOCAL INFILE).",
+    "  indices.sql    cria os índices secundários.",
+    "  objetos.sql    chaves estrangeiras, views e triggers.",
+    "  conferir.sql   conta as linhas de cada tabela e mostra OK ou DIVERGENTE.",
+    "",
+    "ATENÇÃO: o estrutura.sql apaga as tabelas de mesmo nome que já existam nesses bancos. Faça isso num MySQL de teste ou sem dados que importem.",
+    "",
+    "SE DER ERRO \"The used command is not allowed with this MySQL version\" (1148): o servidor está com local_infile desligado.",
+    "  Ligue com  SET GLOBAL local_infile=1;  (precisa de privilégio) e rode de novo.",
+    "",
+    "PARA FICAR AINDA MAIS RÁPIDO (opcional, no servidor que vai receber os dados): innodb_flush_log_at_trx_commit=2 durante a carga",
+    "  e innodb_log_file_size maior (exige reiniciar o serviço). Volte aos valores normais depois.",
+    "",
+    "CONFERÊNCIA:",
+    ...lines,
+    "",
+    "Gerado pelo Recuperador de Banco MySQL (versão navegador) em " + new Date().toLocaleString("pt-BR") + ".",
+    "",
+  ].join("\r\n");
+  const sql = dirs.flatMap((dir) => ["estrutura", "carregar", "indices", "objetos", "conferir"].map((part) => `SOURCE ${dir}/${part}.sql;`)).join("\n") + "\n";
+  const bat = [
+    "@echo off", "chcp 65001 > nul", 'cd /d "%~dp0"',
+    "echo Restaurando os bancos no MySQL. Precisa do MySQL ligado e do comando mysql no PATH.",
+    "set /p MYSQL_USER=Usuario do MySQL [root]: ",
+    'if "%MYSQL_USER%"=="" set MYSQL_USER=root',
+    "echo Informe a senha do MySQL quando ele pedir. O que importar aparece abaixo; no fim vem a conferencia das linhas.",
+    "mysql -u %MYSQL_USER% -p --local-infile=1 --default-character-set=utf8 --max_allowed_packet=64M -t < restaurar.sql",
+    "echo.", "echo Fim. Se nao houve mensagem de erro acima, confira que nenhuma linha da conferencia diz DIVERGENTE.", "pause", "",
+  ].join("\r\n");
+  return [{ name: "LEIA-ME.txt", text: readme }, { name: "restaurar.sql", text: sql }, { name: "restaurar.bat", text: bat }];
 }
 
 // Junta os relatórios dos bancos num só (a tela lê este formato).

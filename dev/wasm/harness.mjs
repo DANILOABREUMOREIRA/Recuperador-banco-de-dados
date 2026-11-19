@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const web = path.resolve(here, "..", "..");
+const web = process.env.WEB_ROOT ? path.resolve(process.env.WEB_ROOT) : path.resolve(here, "..", "..");
 const [dataDir, outSql, mode, database] = process.argv.slice(2);
 if (!dataDir || !outSql || !["kernel", "python"].includes(mode)) {
   console.error("Uso: node harness.mjs <pasta data> <saida.sql> <kernel|python>");
@@ -16,11 +16,11 @@ if (!dataDir || !outSql || !["kernel", "python"].includes(mode)) {
 }
 
 const MODULES = ["innodb_carver", "page_health", "mysql_codec", "frm_parser", "dictionary_rebuild", "stream_carver", "bigfile",
-  "lost_tables", "kernel_bridge", "kernel_paths", "web_driver"];
+  "lost_tables", "kernel_bridge", "kernel_paths", "load_format", "web_driver"];
 
 const started = Date.now();
 const pyodide = await loadPyodide();
-for (const name of MODULES) pyodide.FS.writeFile(`/home/pyodide/${name}.py`, fs.readFileSync(path.join(web, "py", `${name}.py`), "utf8"));
+for (const name of MODULES.filter((n) => fs.existsSync(path.join(web, "py", `${n}.py`)))) pyodide.FS.writeFile(`/home/pyodide/${name}.py`, fs.readFileSync(path.join(web, "py", `${name}.py`), "utf8"));
 pyodide.FS.mkdir("/data");
 pyodide.FS.mount(pyodide.FS.filesystems.NODEFS, { root: path.resolve(dataDir) }, "/data");
 const outDir = path.dirname(path.resolve(outSql));

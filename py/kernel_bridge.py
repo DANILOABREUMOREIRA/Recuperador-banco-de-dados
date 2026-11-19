@@ -20,7 +20,7 @@ K_SKIP, K_INT, K_DATETIME, K_DATE, K_TIME, K_TIMESTAMP, K_YEAR, K_FLOAT = 0, 1, 
 K_DECIMAL, K_BIT, K_BINARY, K_UTF8, K_CP1252 = 9, 10, 11, 12, 13
 F_UNSIGNED, F_RSTRIP = 1, 2
 SYS_NAMES = ("DB_ROW_ID", "DB_TRX_ID", "DB_ROLL_PTR")
-MODE_BATCH, MODE_FULL = 0, 1
+MODE_BATCH, MODE_FULL, MODE_LINES = 0, 1, 2
 _INF = float("inf")
 
 KERNEL = None        # o objeto JS (kernel.js), registrado pelo worker.js; None = sem kernel
@@ -95,11 +95,12 @@ class Prepared:
 class Page:
     """O resultado de uma página: contagens, registros especiais, metadados (modo 1) e o texto."""
 
-    __slots__ = ("seen", "deleted", "bad", "rows", "overflow", "specials", "meta", "blob")
+    __slots__ = ("seen", "deleted", "bad", "rows", "overflow", "specials", "meta", "blob", "mode")
 
     def __init__(self, pack, mode):
         seen, deleted, bad, rows, n_special, n_meta, out_len, overflow = struct.unpack_from("<8i", pack, 0)
         self.seen, self.deleted, self.bad, self.rows, self.overflow = seen, deleted, bad, rows, bool(overflow)
+        self.mode = mode
         at = 32
         self.specials = struct.unpack_from(f"<{n_special}i", pack, at) if n_special else ()
         at += 4 * n_special
@@ -107,9 +108,12 @@ class Page:
         at += 36 * n_meta
         self.blob = pack[at:at + out_len]
 
-    # modo 0: o texto das linhas vivas juntas por vírgula (o kernel deixa uma vírgula depois de cada linha)
+    # modo 0: o texto das linhas vivas juntas por vírgula (o kernel deixa uma vírgula depois de cada linha).
+    #   modo 2: uma linha por registro, cada uma terminada por quebra de linha (o formato do LOAD DATA): fica como veio.
     def text(self):
-        return fix_floats(self.blob[:-1]) if self.blob else b""
+        if not self.blob:
+            return b""
+        return fix_floats(self.blob if self.mode == MODE_LINES else self.blob[:-1])
 
 
 _FLOAT = re.compile(rb"\xff(?:\x00(.{4})|\x01(.{8}))", re.S)

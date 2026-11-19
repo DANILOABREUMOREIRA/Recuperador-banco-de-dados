@@ -133,6 +133,32 @@ Limitação do método: registros apagados há pouco tempo podem reaparecer (pá
 Site estático, sem build. Na Vercel: **Add New > Project**, importe este repositório, *Framework Preset* **Other**,
 sem comando de build e sem pasta de saída. No GitHub Pages: publique a raiz do repositório.
 
+## O formato rápido (v1.8.2)
+Com a caixa **Formato rápido de importação (LOAD DATA)** marcada (é o padrão), a recuperação entrega sempre um **`.zip`**, mesmo com um banco só, e
+em vez de um `.sql` cheio de `INSERT` ele leva, por banco: `estrutura.sql` (DROP + CREATE TABLE sem os índices secundários), `dados/*.txt` (as linhas,
+no mesmo texto de um `INSERT`: `(1,'abc',NULL)`), `carregar.sql` (um `LOAD DATA LOCAL INFILE` por arquivo), `indices.sql` (os índices, criados com os
+dados já dentro), `objetos.sql` (chaves estrangeiras, views e triggers) e `conferir.sql` (conta as linhas de cada tabela e mostra OK ou DIVERGENTE),
+mais `restaurar.sql`, `restaurar.bat` e o LEIA-ME na raiz. O cliente extrai o `.zip` e dá dois cliques em `restaurar.bat`.
+
+Por que é mais rápido: o `LOAD DATA` não tem o custo de interpretar cada `INSERT`, e criar os índices no fim é mais rápido que atualizá-los a cada
+linha. Medido num banco de 2,6 milhões de linhas (320 MB de `.sql`, MySQL 5.5 com a configuração padrão): `INSERT` 87 s, `LOAD DATA` + índices no fim
+43 s; com o servidor ajustado (log do InnoDB maior, `doublewrite` desligado) 28 s. Só o `LOAD DATA` ganha pouco; o ganho vem dele junto com os índices
+no fim. Nos bancos reais pequenos (`farmacia`, `lc_sistemas`) o ganho é de 1,1 a 1,5 vez. Também evita o erro "server has gone away" em linhas maiores
+que o `max_allowed_packet` (1 MB no 5.5 padrão), porque o `LOAD DATA` não manda a linha num comando só.
+
+Conferência: nos testes (`dev/loaddata/`), o `CHECKSUM TABLE` de todas as tabelas ficou igual ao da importação por `INSERT` (4 bancos, o maior com 2,6
+milhões de linhas, e um teste de valores difíceis). O que o `LOAD DATA` não entende sozinho (binário, TIMESTAMP, AUTO_INCREMENT, BIT, YEAR, ENUM e SET) é
+lido para uma variável e convertido no `SET` do comando (`py/load_format.py`). O `float` `-0.0` sai preservado (o `INSERT` perdia o sinal).
+
+Limites: precisa de `local_infile` ligado no servidor (o padrão do 5.5; o LEIA-ME explica o erro 1148); o `estrutura.sql` apaga as tabelas de mesmo nome.
+Desmarcar a caixa volta ao `.sql` com `INSERT` (e **Baixar .zip** com o `.sql`, como na v1.8.1). Para testar no navegador local:
+`?auto=1&fmt=load&save=1` (o servidor de teste guarda o `.zip` em `dev/saida_teste/`).
+
+### Leitura em blocos de 1 MB (v1.8.2)
+No navegador, cada leitura de 16 KB do arquivo (WORKERFS) é uma chamada lenta. O `ibdata1` é varrido página por página, então a leitura passou a ser
+feita em blocos de 1 MB quando é sequencial (`py/bigfile.py`, que antes só servia para arquivos de mais de 2 GB). Num banco de 460 MB de `ibdata1`:
+a recuperação foi de 81 s para 29 s (`.sql`) e a leitura do dicionário de 18 s para 4 s, com o mesmo resultado (mesmo SHA-256).
+
 ## Estrutura
 
 ```
@@ -148,6 +174,7 @@ worker.js             liga o Pyodide, monta os arquivos (WORKERFS) e grava o dum
 kernel.wasm           o laço quente (ler registros e escrever o SQL) compilado para WebAssembly (7 KB)
 kernel.js             carrega o kernel.wasm e o entrega ao Python
 py/kernel_bridge.py   descreve as colunas da tabela ao kernel e separa o resultado de cada página
+py/load_format.py      o formato rápido: LOAD DATA, índices no fim e conferência
 py/kernel_paths.py    as duas leituras de tabela (grandes em lotes, pequenas completas) que usam o kernel
 dev/wasm/             fonte do kernel (AssemblyScript, assembly/kernel.ts) e harness.mjs, que roda o motor no Pyodide do Node
 vendor/zip            zip.js 2.24.0 (BSD-3-Clause)

@@ -410,3 +410,7 @@ textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .toast span { display: block; font-size: .85rem; color: var(--muted-2); margin-top: 2px; overflow-wrap: anywhere; }
 .toast.err strong { color: var(--err); }
 @keyframes toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+/* Escolha do formato de entrega, logo acima do botão Recuperar. */
+.fast-format { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 14px; font-size: .88rem; color: var(--muted-2); cursor: pointer; }
+.fast-format input { accent-color: var(--accent, currentColor); }

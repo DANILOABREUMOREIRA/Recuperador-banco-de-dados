@@ -65,8 +65,9 @@ def inserts(table_name, columns, pieces):
 
 
 # ------------------------------------------------------------------------------------------ tabelas grandes
-def stream_sql(carver, name, ddl_hint=None, progress=None, stats=None):
-    """Como stream_carver.stream_table, mas gera (colunas, linhas, [(quantidade, bytes), ...]) por lote, com o texto SQL pronto."""
+def stream_sql(carver, name, ddl_hint=None, progress=None, stats=None, lines=False):
+    """Como stream_carver.stream_table, mas gera (colunas, linhas, [(quantidade, bytes), ...]) por lote, com o texto SQL pronto.
+    lines=True: cada linha sai terminada por quebra de linha (formato do LOAD DATA) em vez de separada por vírgula."""
     table = carver.table(name)
     if not table:
         raise CarverError(f"tabela {name} não encontrada no dicionário interno")
@@ -101,7 +102,7 @@ def stream_sql(carver, name, ddl_hint=None, progress=None, stats=None):
             if deleted:
                 stats["deleted"] += 1
                 return
-            pieces_.append((1, row_text(fields, out_index, perm, raw).encode("utf8")))
+            pieces_.append((1, row_text(fields, out_index, perm, raw).encode("utf8") + (b"\n" if lines else b"")))
         except RECORD_ERRORS:
             stats["bad_records"] += 1
 
@@ -111,7 +112,7 @@ def stream_sql(carver, name, ddl_hint=None, progress=None, stats=None):
             progress(stats["pages"], total)
         page = ts.page(page_no)
         stats["pages"] += 1
-        result = prepared.convert(page, kernel_bridge.MODE_BATCH) if prepared else None
+        result = prepared.convert(page, kernel_bridge.MODE_LINES if lines else kernel_bridge.MODE_BATCH) if prepared else None
         got = []
         if result is None or result.overflow:
             seen = 0

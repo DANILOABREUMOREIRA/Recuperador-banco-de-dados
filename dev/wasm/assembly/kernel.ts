@@ -462,7 +462,8 @@ function splitRecord(origin: i32, nFields: i32, nNullable: i32): i32 {
   return special ? R_SPECIAL : R_OK;
 }
 
-// processa um registro; mode 0 = só texto das linhas vivas, mode 1 = por registro com chave e transação
+// processa um registro; mode 0 = só texto das linhas vivas (separadas por vírgula), mode 2 = igual, separadas por quebra de linha
+//   (o formato do LOAD DATA), mode 1 = por registro com chave e transação
 function processRecord(origin: i32, mode: i32, nFields: i32, nNullable: i32, nKey: i32, nOut: i32): void {
   if ((pg(origin - 3) & 7) != 0) return;                // não é registro comum (nó interno, etc.)
   let deleted = (pg(origin - 5) & 0x20) != 0;
@@ -522,9 +523,9 @@ function processRecord(origin: i32, mode: i32, nFields: i32, nNullable: i32, nKe
     nDeleted++;
     return;
   }
-  if (mode == 0) {
+  if (mode != 1) {
     nRows++;
-    put(44);                                            // a vírgula separadora fica depois de cada linha; o JS tira a última
+    put(mode == 2 ? 10 : 44);                                            // a vírgula separadora fica depois de cada linha; o JS tira a última
     return;
   }
   // modo 1: metadados do registro (o texto de uma linha apagada não é usado)

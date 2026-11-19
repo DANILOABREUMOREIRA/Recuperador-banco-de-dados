@@ -23,6 +23,7 @@ import dictionary_rebuild
 import frm_parser
 import kernel_bridge
 import kernel_paths
+import load_format
 from innodb_carver import CarverError, InnodbCarver, ddl_from_dictionary, rows_to_sql
 from lost_tables import recover_lost_tables
 from stream_carver import stream_table
@@ -84,17 +85,22 @@ def prepare_all(data_dir, log=print):
     return carver, found, databases
 
 
-def recovery_for(data_dir, db, carver, found, log=print, stream_pages=None):
+def recovery_for(data_dir, db, carver, found, log=print, stream_pages=None, mode="sql"):
     """Recovery do banco `db` usando o leitor e as tabelas achadas de prepare_all()."""
     restored = {full.split("/", 1)[1]: how for full, how in found.items() if full.startswith(db + "/")}
-    return Recovery(data_dir, log=log, stream_pages=stream_pages, database=db, carver=carver, restored=restored)
+    return Recovery(data_dir, log=log, stream_pages=stream_pages, database=db, carver=carver, restored=restored, mode=mode)
 
 
 class Recovery:
     """Uso: plan() -> cabeçalho; table(i) para cada tabela -> pedaço do dump; finish() -> rodapé; report() -> resumo."""
 
-    def __init__(self, data_dir, log=print, stream_pages=None, database=None, carver=None, restored=None):
+    def __init__(self, data_dir, log=print, stream_pages=None, database=None, carver=None, restored=None, mode="sql"):
         self.data_dir, self.log = data_dir, log
+        # mode "load": o formato rápido (load_format.py). begin_table/next_chunk entregam só as LINHAS (o texto que o LOAD DATA lê); a
+        #   estrutura, os LOAD DATA, os índices e os objetos ficam guardados aqui e saem em load_files().
+        self.load = mode == "load"
+        self.struct, self.loads, self.alters, self.tail = [], [], [], b""
+        self.load_meta = {}     # tabela -> (colunas, tipo de cada coluna, coluna AUTO_INCREMENT)
         # carver: leitor já carregado (a varredura do ibdata1 é a parte cara; vários bancos da mesma pasta a reaproveitam).
         # restored: o que a busca de tabelas perdidas (lost_tables) já achou, quando ela rodou antes, para todos os bancos.
         self.shared_carver, self.lost_done = carver, restored is not None
@@ -281,25 +287,34 @@ class Recovery:
             self.status[name] = {"rows": 0, "status": "AVISO",
                                  "note": "Estrutura recriada pelo .frm, mas os dados não foram localizados nas páginas."}
             self.warn(f"Tabela {name}: estrutura recriada, dados não localizados.")
-            yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{hint};\n\n\n".encode("utf8"))
+            yield self._structure(name, f"DROP TABLE IF EXISTS `{name}`;\n{hint};\n\n\n")
             return
 
         ddl = ddl_from_dictionary(tdef, hint)
         rows, problem, info = 0, None, ""
         blobs_before = getattr(self.carver, "external_damaged", 0)
         if self._is_big(tdef):
-            yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8"))
+            yield self._structure(name, f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n", ddl)
             stats = {}
             try:
                 if kernel_bridge.available():
                     # no navegador, o kernel WebAssembly converte as páginas e já entrega o texto SQL
-                    for columns, count, pieces in kernel_paths.stream_sql(self.carver, full, ddl_hint=hint, progress=self.on_pages, stats=stats):
+                    for columns, count, pieces in kernel_paths.stream_sql(self.carver, full, ddl_hint=hint, progress=self.on_pages, stats=stats,
+                                                                          lines=self.load):
                         rows += count
-                        yield self._emit(kernel_paths.inserts(name, columns, pieces) + b"\n")
+                        if self.load:
+                            self._load_columns(name, tdef, columns, ddl)
+                            yield self._emit(b"".join(text for _, text in pieces))
+                        else:
+                            yield self._emit(kernel_paths.inserts(name, columns, pieces) + b"\n")
                 else:
                     for columns, records in stream_table(self.carver, full, ddl_hint=hint, progress=self.on_pages, stats=stats):
                         rows += len(records)
-                        yield self._emit(rows_to_sql(name, columns, records) + b"\n")
+                        if self.load:
+                            self._load_columns(name, tdef, columns, ddl)
+                            yield self._emit(load_format.rows_to_lines(records))
+                        else:
+                            yield self._emit(rows_to_sql(name, columns, records) + b"\n")
                 if stats.get("bad_records"):
                     problem = f"{stats['bad_records']} registros ilegíveis descartados"
                 if stats.get("damaged_pages"):
@@ -316,16 +331,19 @@ class Recovery:
             info = f"tabela grande, lida em lotes pela cadeia de folhas ({stats.get('leaf_pages', 0):,} páginas)".replace(",", ".")
             if stats.get("loose_pages"):
                 info += f"; {stats['loose_pages']} página(s) fora da árvore (liberadas) não lidas"
-            yield self._emit(b"\n")
+            if not self.load:
+                yield self._emit(b"\n")
         else:
             data = b""
             try:
                 if kernel_bridge.available():
                     columns, count, pieces, stats = kernel_paths.carve_sql(self.carver, full, ddl_hint=hint, progress=self.on_pages)
-                    data, rows = kernel_paths.inserts(name, columns, pieces), count
+                    data, rows = (b"".join(text + b"\n" for _, text in pieces) if self.load else kernel_paths.inserts(name, columns, pieces)), count
                 else:
                     columns, records, stats = self.carver.carve(full, ddl_hint=hint, progress=self.on_pages)
-                    data, rows = rows_to_sql(name, columns, records), len(records)
+                    data, rows = (load_format.rows_to_lines(records) if self.load else rows_to_sql(name, columns, records)), len(records)
+                if self.load:
+                    self._load_columns(name, tdef, columns, ddl)
                 if stats["bad_records"]:
                     problem = f"{stats['bad_records']} registros ilegíveis descartados"
                 health = self.carver.tree_health(full)
@@ -336,7 +354,11 @@ class Recovery:
                     problem = "; ".join(x for x in (problem, f"ao menos {len(lost)} página(s) da tabela perdida(s)") if x)
             except (CarverError, OSError) as e:
                 problem = f"leitura direta falhou: {e}"
-            yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8") + data + b"\n\n")
+            if self.load:
+                self._structure(name, f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n", ddl)
+                yield self._emit(data)
+            else:
+                yield self._emit(f"DROP TABLE IF EXISTS `{name}`;\n{ddl};\n".encode("utf8") + data + b"\n\n")
         cut = getattr(self.carver, "external_damaged", 0) - blobs_before
         if cut:
             problem = "; ".join(x for x in (problem, f"{cut} valor(es) longo(s) (text/blob) incompleto(s): páginas de BLOB danificadas") if x)
@@ -345,6 +367,47 @@ class Recovery:
         self.no_fk[name.lower()] = name
         info = "; ".join(x for x in (self.restored.get(name), info) if x)
         self.status[name] = {"rows": rows, "status": "AVISO" if problem else "OK", "note": "; ".join(x for x in (problem, info) if x)}
+
+    # FAZ: o texto de estrutura de uma tabela. No formato comum ele faz parte do dump (devolve os bytes a gravar). No rápido ele é guardado
+    #   para o estrutura.sql, sem os índices secundários (que vão para o indices.sql), e devolve b"" (nada a gravar agora).
+    def _structure(self, name, text, ddl=None):
+        if not self.load:
+            return self._emit(text.encode("utf8"))
+        if ddl:
+            plain, alter = load_format.split_indexes(name, ddl)
+            text = text.replace(ddl, plain, 1)
+            if alter:
+                self.alters.append(alter)
+        self.struct.append(text)
+        return b""
+
+    # FAZ: guarda, ao ver as colunas de uma tabela, o que o LOAD DATA precisa saber dela (tipo de cada coluna e AUTO_INCREMENT).
+    def _load_columns(self, name, tdef, columns, ddl):
+        if name not in self.load_meta:
+            kinds = {c.name: load_format.load_kind(c) for c in tdef.columns}
+            self.load_meta[name] = (list(columns), kinds, load_format.auto_increment(ddl))
+
+    def table_load_sql(self, index, paths):
+        """Formato rápido: o LOAD DATA da tabela `index`, um por arquivo de dados em `paths` (JSON: caminhos relativos ao zip)."""
+        name = self.tables[index][0]
+        if name in self.load_meta:
+            columns, kinds, auto = self.load_meta[name]
+            for path in json.loads(paths):
+                self.loads.append(load_format.load_statement(name, path, columns, kinds, auto))
+
+    def load_files(self):
+        """Formato rápido: JSON {arquivo: texto} com estrutura.sql, carregar.sql, indices.sql, objetos.sql e conferir.sql do banco."""
+        head = load_format.HEADER.format(db=self.db)
+        checks = [f"SELECT '{name}' AS tabela, {info['rows']} AS esperado, COUNT(*) AS carregado, "
+                  f"IF(COUNT(*)={info['rows']},'OK','DIVERGENTE') AS resultado FROM `{name}`;"
+                  for name, info in self.status.items() if info["status"] != "NAO_LIDA"]
+        return json.dumps({
+            "estrutura.sql": head + "\n".join(self.struct),
+            "carregar.sql": head + "SET autocommit=0;\n\n" + "\n".join(self.loads) + "\nCOMMIT;\n",
+            "indices.sql": head + "\n".join(self.alters) + "\n",
+            "objetos.sql": head + self.tail.decode("utf8"),
+            "conferir.sql": head + "\n".join(checks) + "\n",
+        }, ensure_ascii=False)
 
     def info(self, index):
         """JSON com o resultado da tabela de número `index` (a tela mostra cada tabela assim que ela termina)."""
@@ -430,6 +493,7 @@ class Recovery:
     def finish(self):
         """Devolve o fim do dump: chaves estrangeiras, views e triggers. Fecha os arquivos."""
         tail = self._foreign_keys() + self._objects()
+        self.tail = tail
         self.repaired = len(self.carver.repaired_pages)
         self.bad_pages = self.carver.space.bad_pages
         if not self.shared_carver:   # um carver emprestado (vários bancos na pasta) é fechado por quem o abriu
