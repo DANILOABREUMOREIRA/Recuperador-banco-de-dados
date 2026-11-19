@@ -1,13 +1,11 @@
 // zip-out-worker.js - compacta o dump (.sql) num .zip em fluxo: o .sql é lido aos pedaços e o .zip é gravado aos pedaços,
 // então o tamanho do banco não é limitado pela memória (um dump de 20 GB não passa pela memória do navegador).
-// Recebe { file: File (o .sql), sqlName, extras: [{name, text}], handle: FileSystemFileHandle | null, dir, prefix, raw }.
-//   prefix: texto gravado ANTES do .zip (o .bat que se extrai sozinho: o arquivo é .bat e .zip ao mesmo tempo; o tar do Windows
-//   acha o .zip depois do texto). raw: o `file` já é um .zip pronto (vários bancos): é só copiado depois do prefixo.
+// Recebe { file: File (o .sql), sqlName, extras: [{name, text}], handle: FileSystemFileHandle | null, dir, raw }.
+//   raw: o `file` já é um .zip pronto (vários bancos): é só copiado.
 //   Com handle (Chrome e Edge) o .zip é gravado direto no arquivo que o usuário escolheu. Sem handle vai para o disco do
 //   navegador (OPFS, pasta dir) e volta como File para a tela baixar.
 // Avisa {progress: {done, total}}, {done: {file}} ou {error}.
 import * as zip from './vendor/zip/zip.min.js';
-import { tailPatcher } from './zip-tail.js';
 
 zip.configure({ useWebWorkers: false });   // este já é um worker
 
@@ -27,7 +25,7 @@ async function opfsSink(dir) {
 
 onmessage = async ({ data }) => {
   try {
-    const { file, sqlName, extras, handle, dir, prefix, raw } = data;
+    const { file, sqlName, extras, handle, dir, raw } = data;
     let sink = null, writable;
     if (handle) writable = await handle.createWritable();
     else {
@@ -36,15 +34,6 @@ onmessage = async ({ data }) => {
       }
       sink = await opfsSink(dir);
       writable = sink.writable;
-    }
-    if (prefix) {
-      const text = typeof prefix === 'string' ? new TextEncoder().encode(prefix) : prefix;
-      const head = writable.getWriter();
-      await head.write(text);
-      head.releaseLock();
-      // As posições do .zip contam do início DELE: com texto na frente o tar só lê o .zip64 se elas forem corrigidas (zip-tail.js).
-      //   Com um programa (.exe) na frente não se corrige: o zipfile do Python já acha o .zip sozinho e a correção o confundiria.
-      if (typeof prefix === 'string') writable = tailPatcher(writable, text.length);
     }
     if (raw) {                                  // o .zip de vários bancos já está pronto: copia aos pedaços
       const out = writable.getWriter();

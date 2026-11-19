@@ -17,8 +17,8 @@ navegador pelo [Pyodide](https://pyodide.org).
 3. Clique em **Recuperar**. No Chrome e no Edge o site pede onde salvar o `.sql` (ou o `.zip`, com vários bancos) e grava direto no disco,
    tabela por tabela; nos outros navegadores o dump fica no disco do navegador e baixa no fim (pede espaço livre extra). Não pede nome:
    o nome é o da pasta ou do `.zip` (só para o histórico).
-4. Opcional: **Baixar restaurador** pede onde salvar o `.exe`. Dois cliques nele criam a pasta `banco de dados recuperado` com `data` e `sql`
-   (veja "O restaurador"). Sem ele, importe o `.sql`: `mysql -uroot -p < banco_recuperado.sql`.
+4. Opcional: **Baixar .zip** pede onde salvar um `.zip` com o `.sql`, um `restaurar.bat` e um LEIA-ME (veja "O .zip com os .sql").
+   Sem ele, importe o `.sql`: `mysql -uroot -p < banco_recuperado.sql`.
 
 ## Interface
 
@@ -208,28 +208,13 @@ GPL-2.0 (arquivo `LICENSE`). `py/innodb_carver.py` porta a lógica de formato do
 [TwinDB undrop-for-innodb](https://github.com/twindb/undrop-for-innodb), que é GPL-2.0. As bibliotecas em `vendor/`
 mantêm as licenças delas (arquivos `LICENSE` em cada pasta).
 
-## O restaurador (.exe que faz tudo sozinho)
-Depois da recuperação, **Baixar restaurador** gera um único arquivo `.exe` que também é um `.zip`: o programa `static/restaurar_stub.exe` vai
-na frente e o `.zip` (os `.sql`, o `restaurar.bat` de importação manual e um LEIA-ME) vem colado depois (`zip-out-worker.js`, parâmetros
-`prefix` e `raw`; com vários bancos o `.zip` pronto é copiado). O programa lê o próprio arquivo como `.zip` (o `zipfile` do Python acha o fim
-sozinho, inclusive `.zip64`; por isso o `zip-tail.js`, que corrige posições para o `tar` do `.bat` antigo, não é usado com o `.exe`).
-Dois cliques criam, ao lado do arquivo, a pasta **banco de dados recuperado**:
-- `sql\` os `.sql` (um por banco), o `restaurar.bat` e o LEIA-ME;
-- `data\` a pasta data pronta para o MySQL 5.5; `logs\` e `mysql_temporario_saida.log` com o que o MySQL temporário disse.
+## O .zip com os .sql
+Depois da recuperação, **Baixar .zip** gera (aos pedaços, `zip-out-worker.js`) um `.zip` com o `.sql`, um `restaurar.bat` que o importa num MySQL
+instalado (pede a senha) e um LEIA-ME; com vários bancos o `.zip` pronto é copiado. **O site não gera a pasta `data`**: o navegador não tem
+servidor MySQL e não existe MySQL 5.5 com InnoDB para WebAssembly. Para a pasta `data`, use o Recuperador de desktop (`programa/`) com o `.sql`:
+ele importa num MySQL 5.5 temporário e entrega a `data` em `.zip`/`.rar`.
 
-Não precisa de MySQL instalado: o `.exe` leva o MySQL 5.5 do Recuperador de desktop e roda **o mesmo motor** dele
-(`programa/sistema/restaurar_pasta_data.py`: `MySQLInstance`, `clean_import_args` e `_import_sql`, os mesmos do caminho `.sql` do Recuperador).
-- sobe uma cópia **temporária** numa porta livre de `127.0.0.1`, com log do InnoDB de 256 MB e sem doublewrite (importar GBs com os 5 MB
-  padrão era o que deixava lento); o MySQL instalado não é tocado;
-- o esquema `mysql` vem limpo de dentro do `.exe` (ou de `mysql_original\` ao lado dele, que mantém usuários e senhas do banco original);
-- importa cada `.sql`, mostra a contagem de tabelas por banco, desliga com shutdown limpo e apaga `ib_logfile*` (o MySQL do sistema recria
-  no tamanho do `my.ini` dele).
-
-**Refazer o `static/restaurar_stub.exe`** quando o motor do desktop mudar: `python dev/construir_restaurador.py` (PyInstaller; uns 15 MB).
-O Windows (SmartScreen) avisa que o `.exe` é de editor desconhecido: *Mais informações > Executar assim mesmo*.
-
-Medido no PC de desenvolvimento: `.exe` + `.zip` (um e dois bancos de 30 MB, este também com `.zip64`) geram a pasta `data`, e o MySQL 5.5 sobe nela
-(238 tabelas, 109.540 linhas). Ainda não medido: o tempo de um banco de GBs (`lc_analisesped`, 3,3 GB de `.sql`).
+(As versões 1.7.0 a 1.8.0 entregavam um `.bat` e depois um `.exe` que gerava a `data`; foram retiradas porque os antivírus barravam o `.exe`.)
 
 Escolher o banco: clicar na área abre direto a janela de escolher o `.zip`; a pasta `data` entra arrastada (o navegador não tem
 janela que escolha arquivo e pasta juntos).
